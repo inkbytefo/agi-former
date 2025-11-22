@@ -29,18 +29,12 @@ class LocalAutoregressiveHead(nn.Module):
         self.head = nn.Linear(hidden_dim, 256)
 
     def forward(self, latents, target_bytes=None):
-        """
-        Args:
-            latents: (B, N_Patches, D_Model)
-            target_bytes: (B, L) - Required for training (Teacher Forcing)
-        """
         B, N, D = latents.shape
-        
         # (B * N, 1, Hidden)
         latent_context = self.proj_latent(latents).view(B * N, 1, -1)
         
         if target_bytes is not None:
-            # TRAINING MODE (Teacher Forcing)
+            # --- TRAINING MODE ---
             # Reshape targets to (B, N, Patch_Size)
             targets = target_bytes.view(B, N, self.patch_size)
             
@@ -65,52 +59,26 @@ class LocalAutoregressiveHead(nn.Module):
             return logits.view(B, N, self.patch_size, 256)
             
         else:
-            # INFERENCE MODE
+            # --- INFERENCE MODE (Strict Greedy for Debugging) ---
             pred_bytes = []
             # Start with SOS (0)
             current_input = torch.zeros(B * N, 1, dtype=torch.long, device=latents.device)
             
             # Initialize hidden state
             hidden = None 
-            
-            # Sampling parameters (can be passed via kwargs later if needed, hardcoding defaults for now or checking kwargs)
-            # Ideally we should pass these in forward, but for now let's just use a default or check if we can hack it.
-            # Actually, let's just change the signature of forward to accept kwargs.
-            temperature = 1.0
-            
+
             for i in range(self.patch_size):
                 emb = self.byte_emb(current_input) # (B*N, 1, H)
                 
                 # Concatenate latent
                 rnn_in = torch.cat([emb, latent_context], dim=-1) # (B*N, 1, H*2)
                 
+                # GRU State Preservation
                 out, hidden = self.rnn(rnn_in, hidden)
                 logit = self.head(out) # (B*N, 1, 256)
                 
-                # Sampling vs Greedy
-                # For now, let's use a simple heuristic: if we are in inference (target_bytes is None), 
-                # we probably want to sample to avoid getting stuck in loops, 
-                # BUT for strict reproduction greedy is better.
-                # The user issue is [0,0,0,0]. 
-                # Let's use temperature sampling.
-                
-                # Sanitize logits to prevent NaN/Inf crash
-                if torch.isnan(logit).any() or torch.isinf(logit).any():
-                    # print("Warning: NaN/Inf in logits, sanitizing...") # Commented out to avoid spam
-                    logit = torch.nan_to_num(logit, nan=0.0, posinf=100.0, neginf=-100.0)
-                
-                if temperature > 0:
-                    # Apply temperature
-                    scaled_logits = logit / temperature
-                    probs = torch.softmax(scaled_logits, dim=-1)
-                    
-                    # Double check probs for safety
-                    if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any():
-                         probs = torch.full_like(probs, 1.0 / 256) # Fallback to uniform
-                         
-                    next_byte = torch.multinomial(probs.squeeze(1), 1) # (B*N, 1)
-                else:
-                    next_byte = torch.argmax(logit, dim=-1)
+                # FORCE GREEDY (Argmax) to verify learning
+                next_byte = torch.argmax(logit, dim=-1)
                 
                 pred_bytes.append(next_byte)
                 current_input = next_byte
