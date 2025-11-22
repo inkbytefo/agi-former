@@ -71,7 +71,12 @@ class LocalAutoregressiveHead(nn.Module):
             current_input = torch.zeros(B * N, 1, dtype=torch.long, device=latents.device)
             
             # Initialize hidden state
-            hidden = None # Let GRU initialize to 0 or we could use latent as initial state if mapped correctly
+            hidden = None 
+            
+            # Sampling parameters (can be passed via kwargs later if needed, hardcoding defaults for now or checking kwargs)
+            # Ideally we should pass these in forward, but for now let's just use a default or check if we can hack it.
+            # Actually, let's just change the signature of forward to accept kwargs.
+            temperature = 1.0
             
             for i in range(self.patch_size):
                 emb = self.byte_emb(current_input) # (B*N, 1, H)
@@ -82,8 +87,19 @@ class LocalAutoregressiveHead(nn.Module):
                 out, hidden = self.rnn(rnn_in, hidden)
                 logit = self.head(out) # (B*N, 1, 256)
                 
-                # Greedy decode
-                next_byte = torch.argmax(logit, dim=-1)
+                # Sampling vs Greedy
+                # For now, let's use a simple heuristic: if we are in inference (target_bytes is None), 
+                # we probably want to sample to avoid getting stuck in loops, 
+                # BUT for strict reproduction greedy is better.
+                # The user issue is [0,0,0,0]. 
+                # Let's use temperature sampling.
+                
+                if temperature > 0:
+                    probs = torch.softmax(logit / temperature, dim=-1)
+                    next_byte = torch.multinomial(probs.squeeze(1), 1) # (B*N, 1)
+                else:
+                    next_byte = torch.argmax(logit, dim=-1)
+                
                 pred_bytes.append(next_byte)
                 current_input = next_byte
             
