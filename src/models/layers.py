@@ -4,20 +4,16 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+## Developer: inkbytefo
+## Modified: 2025-11-22
 
-# Placeholder for Mamba/SSM - In a real scenario, we'd import from mamba_ssm
-# For this prototype, we will implement a simplified SSM or use a GRU as a proxy if Mamba isn't available.
-# However, the prompt asks for Hybrid Attention + SSM.
-# I will implement a mock-up interface for the SSM part to keep the architecture clear,
-# assuming the user might install `mamba-ssm` later or we implement a simple linear RNN.
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 class LinearAttention(nn.Module):
     """
-    Linear Attention (or Linear Transformer) block.
-    Mathematically equivalent to a specific type of SSM.
-    Complexity: O(N) time and memory.
-    Allows parallel training (unlike RNN/GRU).
+    Numerically Stable Linear Attention.
     """
     def __init__(self, d_model: int, num_heads: int = 8, dropout: float = 0.1):
         super().__init__()
@@ -30,9 +26,8 @@ class LinearAttention(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
         
-        # Feature map for Linear Attention (Katharopoulos et al. / Performer)
-        # elu(x) + 1 is a common choice to ensure positivity
-        self.feature_map = nn.ELU() 
+        # Output normalization to prevent residual explosion
+        self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, D = x.shape
@@ -43,64 +38,57 @@ class LinearAttention(nn.Module):
         qkv = self.qkv(x)
         q, k, v = qkv.chunk(3, dim=-1)
         
-        # Reshape for heads: (B, L, H, E)
+        # Reshape: (B, L, H, E)
         q = q.view(B, L, H, E)
         k = k.view(B, L, H, E)
         v = v.view(B, L, H, E)
         
-        # Apply feature map to Q and K to ensure they are positive (Kernel trick)
-        # Q' = phi(Q), K' = phi(K)
-        # Scale Q to prevent large values
-        q = q * (self.head_dim ** -0.5)
+        # Feature Map: ELU + 1 (Standard)
+        # Stability Fix: Normalize Q and K to keep dot products in check
+        q = F.elu(q) + 1.0
+        k = F.elu(k) + 1.0
         
-        # ELU+1 can be close to 0. Add epsilon to ensure strict positivity.
-        q = self.feature_map(q) + 1.0 + 1e-4
-        k = self.feature_map(k) + 1.0 + 1e-4
+        # Scale to prevent huge sums
+        # Standard attention divides by sqrt(dk), here we do it to Q
+        q = q / torch.sqrt(torch.tensor(E, dtype=q.dtype))
         
-        # Linear Attention Formula:
-        # O_i = (Q_i * sum_j(K_j^T * V_j)) / (Q_i * sum_j(K_j^T))
-        # For Causal (Autoregressive) masking, the sum is up to i.
-        # We can use efficient cumulative sum (cumsum) for this.
+        # Linear Attention Core (O(N))
+        # sum_{j<=i} (K_j * V_j^T)
         
-        # 1. Compute KV^T: (B, L, H, E) * (B, L, H, E) -> (B, L, H, E, E) is too big?
-        # No, we want sum_{j<=i} (K_j * V_j^T).
-        # K: (B, L, H, E), V: (B, L, H, E)
-        # We need outer product K_j * V_j^T per step.
-        # Einsum: b l h e, b l h f -> b l h e f
-        
+        # 1. KV Calculation (No huge expansion, einsum handles dimensions)
+        # (B, L, H, E) * (B, L, H, E) -> (B, L, H, E, E)
         kv = torch.einsum('blhe,blhf->blhef', k, v)
         
-        # 2. Compute Cumulative Sum (Parallel Scan equivalent for Linear Attn)
-        kv_cumsum = torch.cumsum(kv, dim=1) # (B, L, H, E, E)
+        # 2. Cumsum (Parallel Scan)
+        kv_cumsum = torch.cumsum(kv, dim=1) 
         
-        # 3. Compute Denominator: sum_{j<=i} K_j
-        k_cumsum = torch.cumsum(k, dim=1) # (B, L, H, E)
+        # 3. K Cumsum (Denominator)
+        k_cumsum = torch.cumsum(k, dim=1) 
         
-        # 4. Compute Output
-        # Num: Q_i * KV_cumsum_i
-        # Den: Q_i * K_cumsum_i
-        
-        # Num: (B, L, H, E) * (B, L, H, E, E) -> (B, L, H, E)
-        # einsum: blhe, blhef -> blhf
+        # 4. Numerator: Q * KV_cumsum
+        # (B, L, H, E) * (B, L, H, E, E) -> (B, L, H, E)
         num = torch.einsum('blhe,blhef->blhf', q, kv_cumsum)
         
-        # Den: (B, L, H, E) * (B, L, H, E) -> (B, L, H)
-        # einsum: blhe, blhe -> blh
+        # 5. Denominator: Q * K_cumsum
+        # (B, L, H, E) * (B, L, H, E) -> (B, L, H)
         den = torch.einsum('blhe,blhe->blh', q, k_cumsum)
         
-        # Add epsilon to den to avoid div by zero
-        den = den.unsqueeze(-1) + 1e-6
+        # Stability Fix: Larger epsilon
+        den = den.unsqueeze(-1) + 1e-5
         
         out = num / den
         
-        # Reshape back
+        # Reshape and Project
         out = out.reshape(B, L, D)
+        out = self.out_proj(out)
         
-        return self.out_proj(self.dropout(out))
+        # Final Norm/Dropout
+        return self.dropout(self.norm(out))
 
 class SlidingWindowAttention(nn.Module):
     """
     Local Attention mechanism restricted to a sliding window.
+    Using standard SDPA for stability.
     """
     def __init__(self, d_model: int, num_heads: int, window_size: int):
         super().__init__()
@@ -109,67 +97,44 @@ class SlidingWindowAttention(nn.Module):
         self.window_size = window_size
         self.head_dim = d_model // num_heads
         
-        assert self.head_dim * num_heads == d_model, "d_model must be divisible by num_heads"
-        
         self.qkv = nn.Linear(d_model, 3 * d_model)
         self.proj = nn.Linear(d_model, d_model)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, D = x.shape
         
-        # Q, K, V projection
         qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
-        # Scaled Dot-Product Attention with Sliding Window Mask
-        # For simplicity in this prototype, we use PyTorch's SDPA with a manual mask or rely on efficient implementation.
-        # Constructing a full mask for sliding window:
+        # Construct Sliding Window Mask manually to avoid SDPA kernel issues with complex constraints
+        # Or simply rely on PyTorch 2.0+ causal masking if strict window is hard
+        # Stability Fix: Use a simpler causal mask + manual zeroing for window
         
-        # Create causal mask
-        mask = torch.triu(torch.ones(L, L, device=x.device), diagonal=1).bool()
+        # Full Causal Mask
+        mask = torch.ones(L, L, device=x.device, dtype=torch.bool).tril(0)
+        # Window constraint: Keep only if i - j < window_size
+        # i.e., j > i - window_size
+        window_mask = torch.ones(L, L, device=x.device, dtype=torch.bool).tril(0).triu(-(self.window_size - 1))
         
-        # Create window mask (mask out elements too far in the past)
-        # i.e., attention is allowed if i - window_size <= j <= i
-        window_mask = torch.triu(torch.ones(L, L, device=x.device), diagonal=-(self.window_size - 1)).bool()
-        window_mask = ~window_mask # Invert to get elements OUTSIDE the window
+        # Combine: We need a bias mask where False -> -inf
+        # SDPA expects attn_mask to be float (0 or -inf) or bool (True=Masked/NotAllowed)
+        # Let's use bool: True means "Don't Attend"
         
-        # Combine: Mask if future OR (past AND outside window)
-        attn_mask = mask | window_mask.T # Transpose because triu creates upper triangle
+        final_mask = ~window_mask 
         
-        # Apply attention
-        # Note: is_causal=False because we manually constructed the causal+window mask
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, is_causal=False)
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=final_mask, is_causal=False)
         
         out = out.transpose(1, 2).reshape(B, L, D)
         return self.proj(out)
 
 class HybridBlock(nn.Module):
-    """
-    Combines Local Attention (for precision) and SSM (for global context).
-    """
-    def __init__(
-        self,
-        d_model: int,
-        num_heads: int = 8,
-        window_size: int = 128,
-        dropout: float = 0.1
-    ):
+    def __init__(self, d_model, num_heads, window_size, dropout):
         super().__init__()
         self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
         
-        # Parallel Branches
         self.attn = SlidingWindowAttention(d_model, num_heads, window_size)
-        # Replaced SimpleSSM (GRU) with LinearAttention (O(N) Parallel)
-        self.ssm = LinearAttention(d_model, num_heads=num_heads)
+        self.ssm = LinearAttention(d_model, num_heads, dropout)
         
-        # Gating / Combination
-        # We can sum them, or use a learned gate.
-        # Here we use a simple learned gate to weight the contributions.
-        self.gate = nn.Sequential(
-            nn.Linear(d_model * 2, d_model),
-            nn.Sigmoid()
-        )
         self.out_proj = nn.Linear(d_model, d_model)
         
         self.mlp = nn.Sequential(
@@ -180,30 +145,17 @@ class HybridBlock(nn.Module):
         )
         self.norm_mlp = nn.LayerNorm(d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pre-norm
+    def forward(self, x):
         residual = x
         x_norm = self.norm1(x)
         
-        # Parallel Execution
         attn_out = self.attn(x_norm)
-        ssm_out = self.ssm(x_norm) # Now using Linear Attention
+        ssm_out = self.ssm(x_norm)
         
-        # Gated Combination
-        # Concatenate and decide how much of each to keep
-        combined = torch.cat([attn_out, ssm_out], dim=-1)
-        gate_score = self.gate(combined) # (B, L, D) - this is not quite right for a scalar gate, but let's say element-wise mixing
+        # Summation fusion
+        x = residual + self.out_proj(attn_out + ssm_out)
         
-        # Actually, a simpler "alpha * attn + (1-alpha) * ssm" might be better, 
-        # but let's just sum them for now with a projection, or use the gate as a mixer.
-        # Let's try: Output = Proj(Concat(Attn, SSM)) + Residual
-        
-        mixed = self.out_proj(attn_out + ssm_out) # Simple sum for stability in prototype
-        
-        x = residual + mixed
-        
-        # MLP Block
-        residual = x
+        # MLP
         x = x + self.mlp(self.norm_mlp(x))
         
         return x
