@@ -140,12 +140,19 @@ class AGIFORMER(nn.Module):
         """
         # 1. Encode
         x = self.encoder(x) # (B, N_Patches, D)
+        if torch.isnan(x).any():
+            print("DEBUG: NaN detected after Encoder!")
         
         # 2. Backbone
-        for layer in self.layers:
+        for i, layer in enumerate(self.layers):
             x = layer(x)
+            if torch.isnan(x).any():
+                print(f"DEBUG: NaN detected after Layer {i}!")
+                break
             
         x = self.norm_f(x)
+        if torch.isnan(x).any():
+             print("DEBUG: NaN detected after Final Norm!")
         
         # 3. Head (Local Autoregressive)
         logits = self.head(x, target_bytes)
