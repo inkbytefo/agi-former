@@ -85,8 +85,11 @@ def generate_text(model_path, prompt_text, max_new_tokens=200):
             generated.extend(last_patch)
             
             # Print continuously
-            text_chunk = "".join([chr(b) if 32 <= b <= 126 else "?" for b in last_patch])
-            print(text_chunk, end='', flush=True)
+            # text_chunk = "".join([chr(b) if 32 <= b <= 126 else "?" for b in last_patch])
+            # print(text_chunk, end='', flush=True)
+            
+            # Debug: Print raw bytes
+            print(f" {last_patch}", end='', flush=True)
             
     print("\n" + "-" * 40)
 
