@@ -103,29 +103,49 @@ class SlidingWindowAttention(nn.Module):
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, L, D = x.shape
+        H = self.num_heads
+        E = self.head_dim
+        scale = 1.0 / (E ** 0.5)
         
-        qkv = self.qkv(x).reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        # (B, L, 3, H, E) -> (3, B, H, L, E)
+        qkv = self.qkv(x).reshape(B, L, 3, H, E).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
-        # Construct Sliding Window Mask manually to avoid SDPA kernel issues with complex constraints
-        # Or simply rely on PyTorch 2.0+ causal masking if strict window is hard
-        # Stability Fix: Use a simpler causal mask + manual zeroing for window
+        # Manual Attention for Stability
+        # (B, H, L, E) @ (B, H, E, L) -> (B, H, L, L)
+        scores = torch.matmul(q, k.transpose(-2, -1)) * scale
         
-        # Full Causal Mask
-        mask = torch.ones(L, L, device=x.device, dtype=torch.bool).tril(0)
-        # Window constraint: Keep only if i - j < window_size
-        # i.e., j > i - window_size
-        window_mask = torch.ones(L, L, device=x.device, dtype=torch.bool).tril(0).triu(-(self.window_size - 1))
+        # Construct Mask
+        # Window constraint: j > i - window_size  =>  i - j < window_size
+        # Causal: j <= i
+        # Valid: i - window_size < j <= i
         
-        # Combine: We need a bias mask where False -> -inf
-        # SDPA expects attn_mask to be float (0 or -inf) or bool (True=Masked/NotAllowed)
-        # Let's use bool: True means "Don't Attend"
+        # Mask is True where we want to BLOCK
+        # 1. Causal Block: j > i (triu(1))
+        # 2. Window Block: j <= i - window_size (tril(-window_size))
         
-        final_mask = ~window_mask 
+        ones = torch.ones(L, L, device=x.device, dtype=torch.bool)
+        causal_mask = ones.triu(1)
+        window_mask = ones.tril(-self.window_size)
         
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=final_mask, is_causal=False)
+        mask = causal_mask | window_mask
         
+        # Apply Mask
+        # Use -1e4 instead of -inf for stability
+        scores = scores.masked_fill(mask, -1e4)
+        
+        # Softmax
+        attn = F.softmax(scores, dim=-1)
+        
+        # Dropout (if needed, but not in init args currently)
+        # attn = F.dropout(attn, p=0.1) 
+        
+        # (B, H, L, L) @ (B, H, L, E) -> (B, H, L, E)
+        out = torch.matmul(attn, v)
+        
+        # (B, H, L, E) -> (B, L, H, E) -> (B, L, D)
         out = out.transpose(1, 2).reshape(B, L, D)
+        
         return self.proj(out)
 
 class HybridBlock(nn.Module):
