@@ -14,7 +14,7 @@ def train():
     D_MODEL = 512
     N_LAYERS = 6
     PATCH_SIZE = 4
-    LR = 5e-4
+    LR = 1e-4 # Lowered from 5e-4 to prevent NaN
     STEPS = 5000 # Run for longer on real data
     VAL_INTERVAL = 100
     SAVE_INTERVAL = 500

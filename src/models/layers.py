@@ -50,8 +50,12 @@ class LinearAttention(nn.Module):
         
         # Apply feature map to Q and K to ensure they are positive (Kernel trick)
         # Q' = phi(Q), K' = phi(K)
-        q = self.feature_map(q) + 1.0
-        k = self.feature_map(k) + 1.0
+        # Scale Q to prevent large values
+        q = q * (self.head_dim ** -0.5)
+        
+        # ELU+1 can be close to 0. Add epsilon to ensure strict positivity.
+        q = self.feature_map(q) + 1.0 + 1e-4
+        k = self.feature_map(k) + 1.0 + 1e-4
         
         # Linear Attention Formula:
         # O_i = (Q_i * sum_j(K_j^T * V_j)) / (Q_i * sum_j(K_j^T))
