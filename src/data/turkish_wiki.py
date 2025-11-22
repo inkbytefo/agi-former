@@ -39,21 +39,21 @@ class TurkishWikiDataset(data.Dataset):
     
     def _download_and_process(self):
         """
-        Download Turkish text using OSCAR corpus (Parquet format).
-        OSCAR is a multilingual corpus from Common Crawl.
+        Download Turkish text using mc4 (multilingual C4).
+        Clean, large-scale Turkish corpus from Common Crawl.
         """
-        print("Downloading Turkish text via OSCAR corpus...")
+        print("Downloading Turkish text via mc4 (multilingual C4)...")
         
         try:
             from datasets import load_dataset
             
-            # Load OSCAR Turkish corpus (smaller, more reliable)
-            print("Loading OSCAR-2301 Turkish corpus...")
+            # Load mc4 Turkish corpus (no gating, stable)
+            print("Loading mc4 Turkish corpus (streaming)...")
             dataset = load_dataset(
-                "oscar-corpus/OSCAR-2301",
+                "mc4",
                 "tr",
                 split="train",
-                streaming=True  # Stream to avoid loading all at once
+                streaming=True  # Stream to avoid loading all
             )
             
             print("Converting to byte format...")
