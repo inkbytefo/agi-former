@@ -58,14 +58,16 @@ class LocalAutoregressiveHead(nn.Module):
             
             return logits.view(B, N, self.patch_size, 256)
             
-        else:
-            # --- INFERENCE MODE (Strict Greedy for Debugging) ---
+            # INFERENCE MODE (Strict Greedy for Debugging)
             pred_bytes = []
             # Start with SOS (0)
             current_input = torch.zeros(B * N, 1, dtype=torch.long, device=latents.device)
             
             # Initialize hidden state
             hidden = None 
+
+            # DEBUG: Check signal strength
+            # print(f"DEBUG: Latent Mean: {latents.abs().mean().item():.4f} | Max: {latents.max().item():.4f}")
 
             for i in range(self.patch_size):
                 emb = self.byte_emb(current_input) # (B*N, 1, H)
@@ -76,6 +78,10 @@ class LocalAutoregressiveHead(nn.Module):
                 # GRU State Preservation
                 out, hidden = self.rnn(rnn_in, hidden)
                 logit = self.head(out) # (B*N, 1, 256)
+                
+                # DEBUG: Check Logit strength
+                # if i == 0:
+                #      print(f"DEBUG: Logit Mean: {logit.abs().mean().item():.4f} | Max: {logit.max().item():.4f}")
                 
                 # FORCE GREEDY (Argmax) to verify learning
                 next_byte = torch.argmax(logit, dim=-1)

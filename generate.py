@@ -71,5 +71,6 @@ def generate_text(model_path, prompt_text, max_new_tokens=100):
     print("\n" + "-" * 50)
 
 if __name__ == "__main__":
-    # Test with a simple wikipedia-style prompt
-    generate_text("best_model.pth", "The history of ")
+    # Test with in-distribution prompt (XML from enwik8 start)
+    # "<mediawiki xmlns=\""
+    generate_text("best_model.pth", "<mediawiki xmlns=\"")
