@@ -57,5 +57,19 @@ def generate_text(model_path, prompt_text, max_new_tokens=200, temperature=0.8):
     print("\n" + "-" * 50)
 
 if __name__ == "__main__":
-    # Test with a generic English prompt to see if it generalizes beyond XML
-    generate_text("best_model.pth", "The history of ", temperature=0.7)
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Generate text with AGIFORMER')
+    parser.add_argument('--prompt', type=str, default="The history of ", help='Text prompt to start generation')
+    parser.add_argument('--temp', type=float, default=0.7, help='Sampling temperature')
+    parser.add_argument('--model', type=str, default="best_model.pth", help='Path to model checkpoint')
+    
+    args = parser.parse_args()
+    
+    # Check if user meant to use the Turkish model but it's named differently
+    model_path = args.model
+    if not os.path.exists(model_path) and os.path.exists("best_model_turkish.pth"):
+        print(f"Note: '{model_path}' not found, using 'best_model_turkish.pth' instead.")
+        model_path = "best_model_turkish.pth"
+        
+    generate_text(model_path, args.prompt, temperature=args.temp)

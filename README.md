@@ -1,31 +1,3 @@
-# AGIFORMER
-
-**Byte-Level Language Model with System 2 Reasoning**
-
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-red.svg)](https://pytorch.org/)
-
-## Overview
-
-AGIFORMER is a novel language model architecture that combines:
-- **Byte-level processing** (no tokenization)
-- **Linear Attention** for $O(N)$ complexity
-- **System 2 Reasoning** via iterative latent refinement
-
-**Key Results:**
-- Final BPC: **2.2578** on enwik8
-- System 2 active thinking: **Δz = 12.7**
-- Zero NaN crashes across training
-- 15 min training time (5000 steps on T4)
-
-## Quick Start
-
-### Installation
-```bash
-git clone https://github.com/inkbytefo/agi-former.git
-cd agi-former
-pip install -r requirements.txt
 ```
 
 ### Training

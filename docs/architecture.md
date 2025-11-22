@@ -82,31 +82,6 @@ out = attn @ V
 
 ### Fusion
 ```python
-x = residual + out_proj(attn_out + ssm_out)
-```
-Parallel branches (not sequential) for efficiency.
-
----
-
-## 3. RecurrentReasoningBlock (System 2)
-
-**File:** `src/models/reasoning.py`
-
-### Algorithm
-```python
-z_0 = input  # Initial latent from backbone
-
-for t in range(thinking_steps):
-    norm_z = LayerNorm(z_t)
-    update = MLP(norm_z)           # Candidate thought
-    gate = sigmoid(W_gate @ norm_z) # How much to accept
-    z_{t+1} = z_t + gate * update   # Gated residual
-    
-return z_T  # Refined latent
-```
-
-### Design Philosophy
-- **Gated Update:** Prevents explosion/vanishing (like LSTM)
 - **Residual Connection:** Allows model to skip thinking if not needed
 - **Pre-Norm:** Stabilizes deep iteration
 
