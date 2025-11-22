@@ -27,7 +27,9 @@ def load_model():
     return model
 
 def generate(model, prompt_text, max_new_tokens=150, temperature=0.7):
-    input_bytes = [ord(c) for c in prompt_text]
+    # Encode prompt to UTF-8 bytes
+    input_bytes = list(prompt_text.encode('utf-8'))
+    
     pad_len = (PATCH_SIZE - (len(input_bytes) % PATCH_SIZE)) % PATCH_SIZE
     if pad_len > 0:
         input_bytes.extend([32] * pad_len)
@@ -51,14 +53,13 @@ def generate(model, prompt_text, max_new_tokens=150, temperature=0.7):
     
     # Decode
     decoded_str = ""
-    for b in generated:
-        if 32 <= b <= 126 or b == 10 or b == 9 or b > 127: # Allow extended ASCII/UTF-8 bytes roughly
-            try:
-                decoded_str += bytes([b]).decode('utf-8', errors='ignore')
-            except:
-                pass
+    # Helper to decode bytes safely
+    try:
+        decoded_str = bytes(generated).decode('utf-8', errors='replace')
+    except:
+        # Fallback for very broken sequences
+        decoded_str = str(generated)
     
-    # Clean up the prompt from the start for display if needed, but here we return full
     return decoded_str
 
 def run_tests():

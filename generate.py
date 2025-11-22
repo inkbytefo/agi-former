@@ -22,7 +22,9 @@ def generate_text(model_path, prompt_text, max_new_tokens=200, temperature=0.8):
     model.load_state_dict(state_dict)
     model.eval()
     
-    input_bytes = [ord(c) for c in prompt_text]
+    # Encode prompt to UTF-8 bytes
+    input_bytes = list(prompt_text.encode('utf-8'))
+    
     pad_len = (PATCH_SIZE - (len(input_bytes) % PATCH_SIZE)) % PATCH_SIZE
     if pad_len > 0:
         input_bytes.extend([32] * pad_len)
@@ -44,17 +46,17 @@ def generate_text(model_path, prompt_text, max_new_tokens=200, temperature=0.8):
             last_patch = pred_patches[0, -1, :].cpu().tolist()
             generated.extend(last_patch)
             
-            decoded_str = ""
-            for b in last_patch:
-                if 32 <= b <= 126 or b == 10 or b == 9:
-                    decoded_str += chr(b)
-                else:
-                    # Simple representation for non-printables
-                    pass 
-            
-            print(decoded_str, end='', flush=True)
+            # Real-time decoding for display is tricky with multi-byte chars
+            # We'll just collect and decode at the end or try best effort
+            pass
             
     print("\n" + "-" * 50)
+    try:
+        full_text = bytes(generated).decode('utf-8', errors='replace')
+        # Print only the new part
+        print(full_text[len(prompt_text):])
+    except:
+        print("\n[Decoding Error]")
 
 if __name__ == "__main__":
     import argparse
