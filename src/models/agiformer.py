@@ -22,76 +22,6 @@ class LocalAutoregressiveHead(nn.Module):
         # Byte embedding for the local decoder
         self.byte_emb = nn.Embedding(256, hidden_dim)
         
-        # Small, fast RNN (GRU) for local decoding
-        # Input size is now hidden_dim (embedding) + hidden_dim (latent context)
-        self.rnn = nn.GRU(hidden_dim * 2, hidden_dim, batch_first=True)
-        
-        self.head = nn.Linear(hidden_dim, 256)
-
-    def forward(self, latents, target_bytes=None):
-        B, N, D = latents.shape
-        # (B * N, 1, Hidden)
-        latent_context = self.proj_latent(latents).view(B * N, 1, -1)
-        
-        if target_bytes is not None:
-            # --- TRAINING MODE ---
-            # Reshape targets to (B, N, Patch_Size)
-            targets = target_bytes.view(B, N, self.patch_size)
-            
-            # Flatten: (B*N, Patch_Size)
-            flat_targets = targets.contiguous().view(B * N, self.patch_size)
-            
-            # Shift targets right to get inputs
-            sos = torch.zeros(B * N, 1, dtype=torch.long, device=latents.device)
-            rnn_inputs_bytes = torch.cat([sos, flat_targets[:, :-1]], dim=1) # (B*N, P)
-            
-            emb = self.byte_emb(rnn_inputs_bytes) # (B*N, P, Hidden)
-            
-            # Concatenate latent context to every step
-            latent_expanded = latent_context.expand(-1, self.patch_size, -1)
-            
-            # Concatenation instead of addition to preserve signal
-            rnn_input = torch.cat([emb, latent_expanded], dim=-1) # (B*N, P, Hidden * 2)
-            
-            out, _ = self.rnn(rnn_input)
-            logits = self.head(out) # (B*N, P, 256)
-            
-            return logits.view(B, N, self.patch_size, 256)
-            
-        else:
-            # INFERENCE MODE (Strict Greedy for Debugging)
-            pred_bytes = []
-            # Start with SOS (0)
-            current_input = torch.zeros(B * N, 1, dtype=torch.long, device=latents.device)
-            
-            # Initialize hidden state
-            hidden = None 
-
-            # DEBUG: Check signal strength
-            print(f"DEBUG: Latent Mean: {latents.abs().mean().item():.4f} | Max: {latents.max().item():.4f}")
-
-            for i in range(self.patch_size):
-                emb = self.byte_emb(current_input) # (B*N, 1, H)
-                
-                # Concatenate latent
-                rnn_in = torch.cat([emb, latent_context], dim=-1) # (B*N, 1, H*2)
-                
-                # GRU State Preservation
-                out, hidden = self.rnn(rnn_in, hidden)
-                logit = self.head(out) # (B*N, 1, 256)
-                
-                # DEBUG: Check Logit strength
-                if i == 0:
-                     print(f"DEBUG: Logit Mean: {logit.abs().mean().item():.4f} | Max: {logit.max().item():.4f}")
-                
-                # FORCE GREEDY (Argmax) to verify learning
-                next_byte = torch.argmax(logit, dim=-1)
-                
-                pred_bytes.append(next_byte)
-                current_input = next_byte
-            
-            return torch.cat(pred_bytes, dim=1).view(B, N, self.patch_size)
-
 class AGIFORMER(nn.Module):
     """
     AGIFORMER: A Byte-Latent Hybrid Architecture.
@@ -123,36 +53,6 @@ class AGIFORMER(nn.Module):
             )
             for _ in range(n_layers)
         ])
-        
-        self.norm_f = nn.LayerNorm(d_model)
-        
-        # Local Autoregressive Head
-        self.head = LocalAutoregressiveHead(d_model, patch_size)
-
-    def forward(self, x: torch.Tensor, target_bytes: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Args:
-            x: (Batch, Seq_Len) uint8 - Input Context
-            target_bytes: (Batch, Seq_Len_Target) - Required for training the local head
-            
-        Returns:
-            logits: (Batch, Num_Patches, Patch_Size, 256)
-        """
-        # 1. Encode
-        x = self.encoder(x) # (B, N_Patches, D)
-        if torch.isnan(x).any():
-            print("DEBUG: NaN detected after Encoder!")
-        
-        # 2. Backbone
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if torch.isnan(x).any():
-                print(f"DEBUG: NaN detected after Layer {i}!")
-                break
-            
-        x = self.norm_f(x)
-        if torch.isnan(x).any():
-             print("DEBUG: NaN detected after Final Norm!")
         
         # 3. Head (Local Autoregressive)
         logits = self.head(x, target_bytes)
