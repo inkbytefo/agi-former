@@ -58,6 +58,7 @@ class LocalAutoregressiveHead(nn.Module):
             
             return logits.view(B, N, self.patch_size, 256)
             
+        else:
             # INFERENCE MODE (Strict Greedy for Debugging)
             pred_bytes = []
             # Start with SOS (0)
