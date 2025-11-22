@@ -56,13 +56,18 @@ def train_turkish():
     print(f"Device: {DEVICE}")
     
     # Data
-    train_loader = get_turkish_wiki_dataloader(
+    # Data
+    from src.data.clean_turkish_data import get_clean_loader
+    
+    train_loader = get_clean_loader(
+        data_dir="./data",
         batch_size=BATCH_SIZE,
         seq_len=SEQ_LEN,
         split="train"
     )
     
-    val_loader = get_turkish_wiki_dataloader(
+    val_loader = get_clean_loader(
+        data_dir="./data",
         batch_size=BATCH_SIZE,
         seq_len=SEQ_LEN,
         split="val"
