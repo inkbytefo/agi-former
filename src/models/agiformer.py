@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from typing import Optional
 from .encoder import ByteLatentEncoder
 from .layers import HybridBlock
+from .reasoning import RecurrentReasoningBlock
 
 class LocalAutoregressiveHead(nn.Module):
     """
@@ -95,7 +96,7 @@ class LocalAutoregressiveHead(nn.Module):
 
 class AGIFORMER(nn.Module):
     """
-    AGIFORMER: A Byte-Latent Hybrid Architecture.
+    AGIFORMER Phase 3: System 2 Enabled
     """
     def __init__(
         self,
@@ -105,7 +106,8 @@ class AGIFORMER(nn.Module):
         patch_size: int = 4,
         window_size: int = 128,
         vocab_size: int = 256,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        thinking_steps: int = 3
     ):
         super().__init__()
         
@@ -127,6 +129,9 @@ class AGIFORMER(nn.Module):
         
         self.norm_f = nn.LayerNorm(d_model)
         
+        # SYSTEM 2 MODULE
+        self.reasoning = RecurrentReasoningBlock(d_model, thinking_steps, dropout)
+        
         # Local Autoregressive Head
         self.head = LocalAutoregressiveHead(d_model, patch_size)
 
@@ -140,16 +145,20 @@ class AGIFORMER(nn.Module):
         Returns:
             logits: (Batch, Num_Patches, Patch_Size, 256)
         """
-        # 1. Encode
+        # 1. System 1 (Intuition / Perception)
         x = self.encoder(x) # (B, N_Patches, D)
         
         # 2. Backbone
-        for i, layer in enumerate(self.layers):
+        for layer in self.layers:
             x = layer(x)
             
         x = self.norm_f(x)
         
-        # 3. Head (Local Autoregressive)
+        # 3. System 2 (Reasoning / Thinking Loop)
+        # Refine the latent state before speaking
+        x = self.reasoning(x)
+        
+        # 4. Output (Articulation)
         logits = self.head(x, target_bytes, temperature=temperature)
         
         return logits
