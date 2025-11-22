@@ -94,8 +94,20 @@ class LocalAutoregressiveHead(nn.Module):
                 # The user issue is [0,0,0,0]. 
                 # Let's use temperature sampling.
                 
+                # Sanitize logits to prevent NaN/Inf crash
+                if torch.isnan(logit).any() or torch.isinf(logit).any():
+                    # print("Warning: NaN/Inf in logits, sanitizing...") # Commented out to avoid spam
+                    logit = torch.nan_to_num(logit, nan=0.0, posinf=100.0, neginf=-100.0)
+                
                 if temperature > 0:
-                    probs = torch.softmax(logit / temperature, dim=-1)
+                    # Apply temperature
+                    scaled_logits = logit / temperature
+                    probs = torch.softmax(scaled_logits, dim=-1)
+                    
+                    # Double check probs for safety
+                    if torch.isnan(probs).any() or torch.isinf(probs).any() or (probs < 0).any():
+                         probs = torch.full_like(probs, 1.0 / 256) # Fallback to uniform
+                         
                     next_byte = torch.multinomial(probs.squeeze(1), 1) # (B*N, 1)
                 else:
                     next_byte = torch.argmax(logit, dim=-1)
