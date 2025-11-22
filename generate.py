@@ -22,6 +22,13 @@ def generate_text(model_path, prompt_text, max_new_tokens=100):
         state_dict = torch.load(model_path, map_location=DEVICE)
         
     model.load_state_dict(state_dict)
+    
+    # Check for NaN/Inf in weights
+    print("Checking model weights for NaNs...")
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"WARNING: {name} contains NaN or Inf!")
+            
     model.eval()
     
     # Prompt Processing
@@ -57,9 +64,9 @@ def generate_text(model_path, prompt_text, max_new_tokens=100):
                     decoded_str += chr(b)
                 else:
                     # Non-printable check
-                    decoded_str += ""
+                    decoded_str += "?"
             
-            print(decoded_str, end='', flush=True)
+            print(f"{decoded_str} {last_patch}", end=' ', flush=True)
             
     print("\n" + "-" * 50)
 
