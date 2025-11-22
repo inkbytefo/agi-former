@@ -39,21 +39,21 @@ class TurkishWikiDataset(data.Dataset):
     
     def _download_and_process(self):
         """
-        Download Turkish text using mc4 (multilingual C4).
-        Clean, large-scale Turkish corpus from Common Crawl.
+        Download Turkish text using allenai/c4 (Parquet format).
+        Modern, maintained, no loading scripts required.
         """
-        print("Downloading Turkish text via mc4 (multilingual C4)...")
+        print("Downloading Turkish text via allenai/c4...")
         
         try:
             from datasets import load_dataset
             
-            # Load mc4 Turkish corpus (no gating, stable)
-            print("Loading mc4 Turkish corpus (streaming)...")
+            # Load allenai/c4 Turkish subset (Parquet - no scripts)
+            print("Loading allenai/c4 Turkish corpus (streaming)...")
             dataset = load_dataset(
-                "mc4",
-                "tr",
+                "allenai/c4",
+                "tr",  # Turkish language code
                 split="train",
-                streaming=True  # Stream to avoid loading all
+                streaming=True
             )
             
             print("Converting to byte format...")
@@ -66,6 +66,11 @@ class TurkishWikiDataset(data.Dataset):
             
             for example in dataset:
                 text = example['text']
+                
+                # Clean: remove empty or very short texts
+                if len(text.strip()) < 50:
+                    continue
+                
                 all_text.append(text)
                 current_bytes += len(text.encode('utf-8'))
                 count += 1
