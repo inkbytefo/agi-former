@@ -45,8 +45,9 @@ class LinearAttention(nn.Module):
         
         # Feature Map: ELU + 1 (Standard)
         # Stability Fix: Normalize Q and K to keep dot products in check
-        q = F.elu(q) + 1.0
-        k = F.elu(k) + 1.0
+        # Stability Fix 2: Ensure strictly positive to avoid 0 denominator
+        q = F.elu(q) + 1.0 + 1e-4
+        k = F.elu(k) + 1.0 + 1e-4
         
         # Scale to prevent huge sums
         # Standard attention divides by sqrt(dk), here we do it to Q
@@ -73,8 +74,8 @@ class LinearAttention(nn.Module):
         # (B, L, H, E) * (B, L, H, E) -> (B, L, H)
         den = torch.einsum('blhe,blhe->blh', q, k_cumsum)
         
-        # Stability Fix: Larger epsilon
-        den = den.unsqueeze(-1) + 1e-5
+        # Stability Fix: Larger epsilon and absolute check
+        den = den.unsqueeze(-1) + 1e-4
         
         out = num / den
         
