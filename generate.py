@@ -21,8 +21,13 @@ def generate_text(model_path, prompt_text, max_new_tokens=200):
     ).to(DEVICE)
     
     if not os.path.exists(model_path):
-        print(f"Error: Model file {model_path} not found.")
-        return
+        print(f"Warning: Model file {model_path} not found.")
+        if model_path == "best_model.pth" and os.path.exists("last_model.pth"):
+            print("Falling back to 'last_model.pth'...")
+            model_path = "last_model.pth"
+        else:
+            print("Error: No model file found.")
+            return
 
     if torch.cuda.is_available():
         model.load_state_dict(torch.load(model_path))

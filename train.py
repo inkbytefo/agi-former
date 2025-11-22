@@ -62,81 +62,94 @@ def train():
     step = 0
     train_iter = iter(train_loader)
     
-    while step < STEPS:
-        try:
-            seq, _ = next(train_iter)
-        except StopIteration:
-            train_iter = iter(train_loader)
-            seq, _ = next(train_iter)
+    try:
+        while step < STEPS:
+            try:
+                seq, _ = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_loader)
+                seq, _ = next(train_iter)
+                
+            seq = seq.to(DEVICE)
             
-        seq = seq.to(DEVICE)
-        
-        # LR Schedule
-        lr_mult = get_lr(step, WARMUP_STEPS, D_MODEL)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = BASE_LR * lr_mult
+            # LR Schedule
+            lr_mult = get_lr(step, WARMUP_STEPS, D_MODEL)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = BASE_LR * lr_mult
+                
+            # Data Prep
+            split_idx = seq.size(1) - PATCH_SIZE
+            x = seq[:, :split_idx]
+            y = seq[:, PATCH_SIZE:]
             
-        # Data Prep
-        split_idx = seq.size(1) - PATCH_SIZE
-        x = seq[:, :split_idx]
-        y = seq[:, PATCH_SIZE:]
-        
-        # Forward
-        optimizer.zero_grad()
-        
-        logits = model(x, target_bytes=y)
-        
-        # Loss
-        B, L_y = y.shape
-        y_reshaped = y.view(B, L_y // PATCH_SIZE, PATCH_SIZE)
-        loss = criterion(logits.contiguous().view(-1, 256), y_reshaped.contiguous().view(-1))
-        
-        # Check NaN
-        if torch.isnan(loss):
-            print(f"CRITICAL: NaN Loss at step {step}. Skipping batch.")
-            # Optional: Re-init model or break
+            # Forward
+            optimizer.zero_grad()
+            
+            logits = model(x, target_bytes=y)
+            
+            # Loss
+            B, L_y = y.shape
+            y_reshaped = y.view(B, L_y // PATCH_SIZE, PATCH_SIZE)
+            loss = criterion(logits.contiguous().view(-1, 256), y_reshaped.contiguous().view(-1))
+            
+            # Check NaN
+            if torch.isnan(loss):
+                print(f"CRITICAL: NaN Loss at step {step}. Skipping batch.")
+                step += 1
+                continue
+                
+            # Backward
+            loss.backward()
+            
+            # Aggressive Gradient Clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+            
+            optimizer.step()
+            
+            if step % 10 == 0:
+                bpc = loss.item() / math.log(2)
+                print(f"Step {step}: Loss = {loss.item():.4f} | BPC = {bpc:.4f} | LR = {optimizer.param_groups[0]['lr']:.2e}")
+                
+            # Validation
+            if step % VAL_INTERVAL == 0 and step > 0:
+                model.eval()
+                val_loss = 0
+                val_steps = 0
+                with torch.no_grad():
+                    for v_step, (v_seq, _) in enumerate(val_loader):
+                        if v_step >= 20: break
+                        v_seq = v_seq.to(DEVICE)
+                        v_split = v_seq.size(1) - PATCH_SIZE
+                        vx = v_seq[:, :v_split]
+                        vy = v_seq[:, PATCH_SIZE:]
+                        
+                        v_logits = model(vx, target_bytes=vy)
+                        
+                        B_v, L_vy = vy.shape
+                        vy_reshaped = vy.view(B_v, L_vy // PATCH_SIZE, PATCH_SIZE)
+                        v_loss = criterion(v_logits.contiguous().view(-1, 256), vy_reshaped.contiguous().view(-1))
+                        val_loss += v_loss.item()
+                        val_steps += 1
+                
+                avg_val_loss = val_loss / val_steps
+                avg_bpc = avg_val_loss / math.log(2)
+                print(f"-- VALIDATION: Loss = {avg_val_loss:.4f} | BPC = {avg_bpc:.4f} --")
+                
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    torch.save(model.state_dict(), "best_model.pth")
+                    print("Saved best model.")
+                
+                model.train()
+                
             step += 1
-            continue
             
-        # Backward
-        loss.backward()
-        
-        # Aggressive Gradient Clipping
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-        
-        optimizer.step()
-        
-        if step % 10 == 0:
-            bpc = loss.item() / math.log(2)
-            print(f"Step {step}: Loss = {loss.item():.4f} | BPC = {bpc:.4f} | LR = {optimizer.param_groups[0]['lr']:.2e}")
-            
-        # Validation
-        if step % VAL_INTERVAL == 0 and step > 0:
-            model.eval()
-            val_loss = 0
-            val_steps = 0
-            with torch.no_grad():
-                for v_step, (v_seq, _) in enumerate(val_loader):
-                    if v_step >= 20: break
-                    v_seq = v_seq.to(DEVICE)
-                    v_split = v_seq.size(1) - PATCH_SIZE
-                    vx = v_seq[:, :v_split]
-                    vy = v_seq[:, PATCH_SIZE:]
-                    
-                    v_logits = model(vx, target_bytes=vy)
-                    
-                    B_v, L_vy = vy.shape
-                    vy_reshaped = vy.view(B_v, L_vy // PATCH_SIZE, PATCH_SIZE)
-                    v_loss = criterion(v_logits.contiguous().view(-1, 256), vy_reshaped.contiguous().view(-1))
-                    val_loss += v_loss.item()
-                    val_steps += 1
-            
-            avg_val_loss = val_loss / val_steps
-            avg_bpc = avg_val_loss / math.log(2)
-            print(f"-- VALIDATION: Loss = {avg_val_loss:.4f} | BPC = {avg_bpc:.4f} --")
-            model.train()
-            
-        step += 1
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user.")
+    finally:
+        print("Saving last model state...")
+        torch.save(model.state_dict(), "last_model.pth")
+        print("Saved last_model.pth")
 
     print(f"Training finished in {time.time() - start_time:.2f}s")
 
