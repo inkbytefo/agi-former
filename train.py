@@ -61,6 +61,7 @@ def train():
     # Training Loop
     step = 0
     train_iter = iter(train_loader)
+    best_val_loss = float('inf')
     
     try:
         while step < STEPS:
