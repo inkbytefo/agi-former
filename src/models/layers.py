@@ -171,12 +171,7 @@ class HybridBlock(nn.Module):
         x_norm = self.norm1(x)
         
         attn_out = self.attn(x_norm)
-        if torch.isnan(attn_out).any():
-            print("DEBUG: NaN detected in SlidingWindowAttention!")
-            
         ssm_out = self.ssm(x_norm)
-        if torch.isnan(ssm_out).any():
-            print("DEBUG: NaN detected in LinearAttention (SSM)!")
         
         # Summation fusion
         x = residual + self.out_proj(attn_out + ssm_out)
