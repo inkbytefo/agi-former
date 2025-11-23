@@ -33,8 +33,10 @@ class HebbianMemory(nn.Module):
         self.feature_map = nn.ELU()
         
         # Learnable Decay Parameter
-        # Initialized to generate sigmoid output ~0.5, mapped to range later
-        self.decay_logits = nn.Parameter(torch.zeros(num_heads)) 
+        # PHASE 8 OPTIMIZATION: Start with high retention (sticky memory)
+        # sigmoid(8.0) ≈ 0.9997 → very strong initial retention
+        # Still learnable, model can adjust down if needed
+        self.decay_logits = nn.Parameter(torch.tensor([8.0] * num_heads)) 
         
         self.norm = nn.LayerNorm(d_model)
         
@@ -79,11 +81,12 @@ class HebbianMemory(nn.Module):
         # Scale Q to prevent magnitude explosion
         q = q / math.sqrt(E)
         
-        # 3. Decay Factor (Lambda) - STABILIZED
-        # Map sigmoid (0,1) to (0.990, 1.0)
-        # This prevents overflow. 0.99^-1024 ~= 29468 (Safe for FP32)
+        # 3. Decay Factor (Lambda) - PHASE 8 OPTIMIZATION
+        # Map sigmoid (0,1) to (0.995, 1.0) for stronger retention
+        # 0.995^1024 = 0.006 (still remembers 0.6% after 1024 steps)
+        # vs 0.99^1024 = 0.00004 (essentially forgotten)
         raw_sigmoid = torch.sigmoid(self.decay_logits).view(1, 1, H, 1)
-        lambdas = 0.99 + (0.01 * raw_sigmoid)
+        lambdas = 0.995 + (0.005 * raw_sigmoid)  # Tighter, stickier range
         
         # Apply Plasticity Schedule
         # Effective Lambda = Lambda * Alpha
