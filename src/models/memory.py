@@ -50,7 +50,15 @@ class HebbianMemory(nn.Module):
         """
         self.plasticity = alpha
 
+    @torch.amp.autocast('cuda', enabled=False)
     def forward(self, x):
+        # CRITICAL: Bypass AMP for this entire module to prevent NaN
+        # With plasticity=0.1, decay factors become exp(±50) and the cumsum
+        # operations accumulate massive intermediate values that overflow in float16
+        # We must use float32 for all computations including linear layers
+        x = x.float()  # Ensure input is float32
+        input_dtype = x.dtype
+        
         B, L, D = x.shape
         H = self.num_heads
         E = self.head_dim
@@ -88,8 +96,17 @@ class HebbianMemory(nn.Module):
         
         indices = torch.arange(L, device=x.device, dtype=torch.float32).view(1, L, 1, 1)
         
-        decay_k = torch.pow(lambdas, -indices) # (1, L, H, 1)
-        decay_q = torch.pow(lambdas, indices)  # (1, L, H, 1)
+        # Use log-space arithmetic to prevent overflow/underflow
+        log_lambdas = torch.log(lambdas.clamp(min=1e-10))
+        
+        # Clamp the exponent BEFORE exp() to prevent overflow
+        # We use ±50 as a safe range that works for float32
+        exp_k = (-indices * log_lambdas).clamp(min=-50, max=50)
+        exp_q = (indices * log_lambdas).clamp(min=-50, max=50)
+        
+        # Compute decay factors
+        decay_k = torch.exp(exp_k)  # lambda^-indices
+        decay_q = torch.exp(exp_q)  # lambda^indices
         
         k_decayed = k * decay_k
         
@@ -120,4 +137,7 @@ class HebbianMemory(nn.Module):
         out = out.reshape(B, L, D)
         out = self.out_proj(out)
         
-        return self.dropout(self.norm(out))
+        # Convert back to input dtype before applying norm and dropout
+        out = self.dropout(self.norm(out))
+        return out.to(input_dtype)  # Convert back to original dtype
+

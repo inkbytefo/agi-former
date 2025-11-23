@@ -12,46 +12,40 @@ def prepare_dictionary_data(data_dir="./data"):
         return output_path
         
     print("[Curriculum] Downloading Dictionary Dataset (Stage 1)...")
+    
+    # Try TDK dataset with specific file to avoid column mismatch
     try:
-        # Candidate 1: TDK Turkish Words (might be gated)
-        print("[Curriculum] Trying 'erogluegemen/TDK_Turkish_Words'...")
-        dataset = load_dataset("erogluegemen/TDK_Turkish_Words", split="train")
-    except Exception as e1:
-        print(f"⚠️ Candidate 1 failed: {e1}")
-        try:
-            # Candidate 2: TURNA Dictionary (might be open)
-            print("[Curriculum] Trying 'Marmara-NLP/TURNA-finetuned-dictionary-tr'...")
-            dataset = load_dataset("Marmara-NLP/TURNA-finetuned-dictionary-tr", split="train")
-        except Exception as e2:
-            print(f"⚠️ Candidate 2 failed: {e2}")
-            print("Fallback: Using clean Wikipedia data for Stage 1")
-            return None
-
-    try:
+        print("[Curriculum] Trying 'erogluegemen/TDK_Turkish_Words' (word meanings only)...")
+        dataset = load_dataset(
+            "erogluegemen/TDK_Turkish_Words", 
+            data_files="tdk_word_meaning_data.csv",
+            split="train"
+        )
+        
         collected_bytes = []
         print("[Curriculum] Processing Dictionary...")
         for item in tqdm(dataset):
-            # Handle different column names
-            # erogluegemen: 'madde', 'anlam'
-            # TURNA: might be different, let's inspect or use .get with defaults
-            # TURNA usually has 'instruction' (word) and 'output' (definition) or similar if it's an instruction set
-            # Let's assume standard text/summary or try to guess
+            # This CSV has: 'madde' (word), 'anlam' (meaning)
+            word = str(item.get('madde', '')).strip()
+            meaning = str(item.get('anlam', '')).strip()
             
-            word = item.get('madde', item.get('word', item.get('instruction', ''))).strip()
-            meaning = item.get('anlam', item.get('definition', item.get('output', ''))).strip()
-            
-            if word and meaning:
+            if word and meaning and len(word) > 0 and len(meaning) > 0:
                 text = f"{word}: {meaning}.\n\n"
                 collected_bytes.append(text.encode('utf-8'))
                 
+        if len(collected_bytes) == 0:
+            raise Exception("No valid entries found in dataset")
+            
         full_data = b"".join(collected_bytes)
         with open(output_path, "wb") as f:
             f.write(full_data)
             
         print(f"[Curriculum] Stage 1 Data Ready: {len(full_data)/1e6:.1f}MB")
         return output_path
+        
     except Exception as e:
-        print(f"⚠️ Processing failed: {e}")
+        print(f"⚠️ Dictionary dataset failed: {e}")
+        print("Fallback: Using clean Wikipedia data for Stage 1")
         return None
 
 def prepare_stories_data(data_dir="./data"):
