@@ -26,7 +26,7 @@ THINKING_STEPS = 3
 
 BATCH_SIZE = 4
 SEQ_LEN = 1024
-MAX_STEPS = 5000
+MAX_STEPS = 20000  # Extended from 5000 for better convergence
 BASE_LR = 3e-4
 WARMUP_STEPS = 100
 GRAD_CLIP = 0.5
