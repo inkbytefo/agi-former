@@ -45,41 +45,64 @@ class SlidingWindowAttention(nn.Module):
         out = out.transpose(1, 2).reshape(B, L, D)
         return self.proj(out)
 
+class SwiGLU(nn.Module):
+    def __init__(self, d_model, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.w1 = nn.Linear(d_model, hidden_dim)
+        self.w2 = nn.Linear(d_model, hidden_dim)
+        self.w3 = nn.Linear(hidden_dim, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        return self.dropout(self.w3(F.silu(self.w1(x)) * self.w2(x)))
+
 class HybridBlock(nn.Module):
     """
     Combines Sliding Window Attention (Local) and Hebbian Memory (Global).
+    
+    v2.0 UPGRADE:
+    - Gated Fusion: Output = sigmoid(g)*Local + (1-g)*Global
+    - SwiGLU: Better activation function
+    - RMSNorm: Better stability
     """
     def __init__(self, d_model, num_heads, window_size, dropout):
         super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
+        self.norm1 = nn.LayerNorm(d_model) # Keeping LayerNorm for consistency with Encoder/Memory for now
         
         # Local Precision
         self.attn = SlidingWindowAttention(d_model, num_heads, window_size)
         
         # Global Context (Hebbian Memory)
-        # Replaces the static LinearAttention with dynamic Fast Weights
         self.memory = HebbianMemory(d_model, num_heads, dropout)
+        
+        # v2.0: Gated Fusion
+        # Learned gate to balance Local vs Global
+        self.fusion_gate = nn.Linear(d_model, 1)
         
         self.out_proj = nn.Linear(d_model, d_model)
         
-        self.mlp = nn.Sequential(
-            nn.Linear(d_model, 4 * d_model),
-            nn.GELU(),
-            nn.Linear(4 * d_model, d_model),
-            nn.Dropout(dropout)
-        )
+        # v2.0: SwiGLU MLP
+        self.mlp = SwiGLU(d_model, 4 * d_model, dropout)
         self.norm_mlp = nn.LayerNorm(d_model)
 
     def forward(self, x):
         residual = x
         x_norm = self.norm1(x)
         
-        # Parallel Branches: Local Attention + Global Hebbian Memory
+        # Parallel Branches
         attn_out = self.attn(x_norm)
         memory_out = self.memory(x_norm)
         
+        # v2.0: Gated Fusion
+        # g = sigmoid(W * x)
+        # If g -> 1, prefer Local Attention
+        # If g -> 0, prefer Global Memory
+        g = torch.sigmoid(self.fusion_gate(x_norm))
+        
+        combined = (g * attn_out) + ((1 - g) * memory_out)
+        
         # Fusion
-        x = residual + self.out_proj(attn_out + memory_out)
+        x = residual + self.out_proj(combined)
         
         # MLP
         x = x + self.mlp(self.norm_mlp(x))

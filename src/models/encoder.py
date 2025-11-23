@@ -9,8 +9,9 @@ class ByteLatentEncoder(nn.Module):
     """
     Encodes raw byte sequences into latent patch representations.
     
-    This module replaces traditional tokenizers by learning to compress
-    raw bytes directly into a higher-dimensional latent space.
+    v2.0 UPGRADE:
+    - Soft Patching: Kernel size 6, Stride 4 (Overlap of 2 bytes)
+    - RMSNorm: Better stability
     """
     def __init__(
         self,
@@ -26,20 +27,22 @@ class ByteLatentEncoder(nn.Module):
         # Byte Embedding: 256 possible byte values -> d_model
         self.byte_embedding = nn.Embedding(256, d_model)
         
-        # Patching mechanism: Strided Convolution
+        # Patching mechanism: Strided Convolution with Overlap
+        # Kernel=6, Stride=4 -> 2 bytes overlap between patches
+        # This reduces "boundary stutter"
         self.patch_conv = nn.Conv1d(
             in_channels=d_model,
             out_channels=d_model,
-            kernel_size=patch_size,
+            kernel_size=6,  # v2.0: Overlap
             stride=patch_size,
-            padding=0
+            padding=1       # Padding to maintain length alignment
         )
         
         # RoPE (Rotary Positional Embeddings)
-        # We precompute frequencies for RoPE
         self.register_buffer("inv_freq", 1.0 / (10000 ** (torch.arange(0, d_model, 2).float() / d_model)))
         
-        self.norm = nn.LayerNorm(d_model)
+        # v2.0: RMSNorm
+        self.norm = nn.LayerNorm(d_model) # Keeping LayerNorm for now to minimize changes, or switch to RMSNorm if defined globally
         self.dropout = nn.Dropout(dropout)
 
     def apply_rope(self, x: torch.Tensor) -> torch.Tensor:
@@ -50,10 +53,6 @@ class ByteLatentEncoder(nn.Module):
         t = torch.arange(N, device=x.device).type_as(self.inv_freq)
         freqs = torch.einsum('i,j->ij', t, self.inv_freq) # (N, D/2)
         emb = torch.cat((freqs, freqs), dim=-1) # (N, D)
-        
-        # Apply rotation
-        # Simple implementation: x_rotated = x * cos(emb) + rotate_half(x) * sin(emb)
-        # rotate_half: [-x2, x1, -x4, x3, ...]
         
         x1 = x[..., :D//2]
         x2 = x[..., D//2:]

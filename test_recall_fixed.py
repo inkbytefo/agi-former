@@ -2,14 +2,23 @@ import torch
 from src.models.agiformer import AGIFORMER
 import os
 
-MODEL_PATH = "best_model_curriculum.pth"
+MODEL_PATH = "best_model_scaled.pth"
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def run_recall_test():
     print(f"--- RECALL TEST (Needle in Haystack) ---")
     
     # Model Yükle
-    model = AGIFORMER(d_model=512, n_layers=6, patch_size=4).to(DEVICE)
+    # Model Yükle
+    # SCALED CONFIGURATION (100M Class) matching train_scaled.py
+    model = AGIFORMER(
+        d_model=768,
+        n_layers=12,
+        num_heads=12,
+        patch_size=4,
+        window_size=256,
+        thinking_steps=3
+    ).to(DEVICE)
     try:
         model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     except FileNotFoundError:

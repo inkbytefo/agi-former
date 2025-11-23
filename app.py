@@ -7,8 +7,8 @@ import os
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 model = AGIFORMER(d_model=512, n_layers=6, patch_size=4, thinking_steps=3).to(DEVICE)
 
-if os.path.exists("best_model_turkish.pth"):
-    model.load_state_dict(torch.load("best_model_turkish.pth", map_location=DEVICE))
+if os.path.exists("best_model_scaled.pth"):
+    model.load_state_dict(torch.load("best_model_scaled.pth", map_location=DEVICE))
     model.eval()
 
 def generate(prompt, temp):

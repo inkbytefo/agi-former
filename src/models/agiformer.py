@@ -9,53 +9,41 @@ from .layers import HybridBlock
 from .reasoning import RecurrentReasoningBlock
 
 class LocalAutoregressiveHead(nn.Module):
-    def __init__(self, d_model, patch_size, hidden_dim=256):
+    """
+    Decodes latent vectors back into bytes.
+    
+    v2.0 UPGRADE:
+    - Replaced GRU with Parallel MLP Decoder.
+    - Predicts all 4 bytes in the patch simultaneously.
+    - Faster and avoids sequential bottleneck.
+    """
+    def __init__(self, d_model, patch_size, hidden_dim=512):
         super().__init__()
         self.patch_size = patch_size
-        self.proj_latent = nn.Linear(d_model, hidden_dim)
-        self.byte_emb = nn.Embedding(256, hidden_dim)
-        self.rnn = nn.GRU(hidden_dim * 2, hidden_dim, batch_first=True)
-        self.head = nn.Linear(hidden_dim, 256)
+        
+        # MLP Decoder
+        # Input: Latent (D)
+        # Output: Patch_Size * 256 (Logits for each byte in patch)
+        self.decoder = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, patch_size * 256)
+        )
 
     def forward(self, latents, target_bytes=None, temperature=0.0):
         B, N, D = latents.shape
-        latent_context = self.proj_latent(latents).view(B * N, 1, -1)
         
-        if target_bytes is not None:
-            targets = target_bytes.view(B, N, self.patch_size)
-            flat_targets = targets.contiguous().view(B * N, self.patch_size)
-            sos = torch.zeros(B * N, 1, dtype=torch.long, device=latents.device)
-            rnn_inputs_bytes = torch.cat([sos, flat_targets[:, :-1]], dim=1)
-            emb = self.byte_emb(rnn_inputs_bytes)
-            latent_expanded = latent_context.expand(-1, self.patch_size, -1)
-            rnn_input = torch.cat([emb, latent_expanded], dim=-1)
-            out, _ = self.rnn(rnn_input)
-            logits = self.head(out)
-            return logits.view(B, N, self.patch_size, 256)
-        else:
-            # Inference logic (omitted for brevity, same as before)
-            # ...
-            return self._inference(latents, latent_context, temperature)
+        # Predict all bytes at once
+        logits = self.decoder(latents) # (B, N, P*256)
+        logits = logits.view(B, N, self.patch_size, 256)
+        
+        return logits
 
     def _inference(self, latents, latent_context, temperature):
-        # Helper for inference to keep code clean
-        B, N, _ = latents.shape
-        pred_bytes = []
-        current_input = torch.zeros(B * N, 1, dtype=torch.long, device=latents.device)
-        hidden = None 
-        for i in range(self.patch_size):
-            emb = self.byte_emb(current_input)
-            rnn_in = torch.cat([emb, latent_context], dim=-1)
-            out, hidden = self.rnn(rnn_in, hidden)
-            logit = self.head(out)
-            if temperature > 0:
-                probs = torch.nn.functional.softmax(logit / temperature, dim=-1)
-                next_byte = torch.multinomial(probs.squeeze(1), 1)
-            else:
-                next_byte = torch.argmax(logit, dim=-1)
-            pred_bytes.append(next_byte)
-            current_input = next_byte
-        return torch.cat(pred_bytes, dim=1).view(B, N, self.patch_size)
+        # Deprecated in v2.0 - forward handles everything
+        pass
 
 class AGIFORMER(nn.Module):
     def __init__(
