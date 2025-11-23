@@ -109,8 +109,10 @@ class HebbianMemory(nn.Module):
         # To implement efficiently without O(L^2), we use the standard trick:
         # Multiply K by exp(-log_cum) and Q by exp(log_cum)
         
-        # Clamp for stability
-        log_lambda_cum = log_lambda_cum.clamp(min=-50, max=50)
+        # CRITICAL FIX: Removed clamp that was distorting temporal distance
+        # The clamp operation broke the model's ability to correctly weigh
+        # information from different time steps, causing garbage output.
+        # Since we use float32 (AMP disabled), exp(-100) = 3.7e-44 is safe.
         
         decay_k = torch.exp(-log_lambda_cum)
         decay_q = torch.exp(log_lambda_cum)

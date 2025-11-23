@@ -27,15 +27,16 @@ class ByteLatentEncoder(nn.Module):
         # Byte Embedding: 256 possible byte values -> d_model
         self.byte_embedding = nn.Embedding(256, d_model)
         
-        # Patching mechanism: Strided Convolution with Overlap
+        # v2.0 CRITICAL FIX: Causal Patching (No Future Leakage)
         # Kernel=6, Stride=4 -> 2 bytes overlap between patches
-        # This reduces "boundary stutter"
+        # IMPORTANT: Padding must be CAUSAL (left-only) to prevent seeing future bytes
+        # We add manual left padding in forward() instead of Conv1d padding
         self.patch_conv = nn.Conv1d(
             in_channels=d_model,
             out_channels=d_model,
-            kernel_size=6,  # v2.0: Overlap
+            kernel_size=6,  
             stride=patch_size,
-            padding=1       # Padding to maintain length alignment
+            padding=0  # Changed from 1 to 0 - manual causal padding in forward
         )
         
         # RoPE (Rotary Positional Embeddings)
@@ -71,10 +72,16 @@ class ByteLatentEncoder(nn.Module):
         # 1. Embed bytes
         x = self.byte_embedding(x.long())
         
-        # 2. Transpose for Conv1d
+        # 2. Transpose for Conv1d: (B, L, D) -> (B, D, L)
         x = x.transpose(1, 2)
         
-        # 3. Apply Patching
+        # 3. CAUSAL PADDING (Left-only, no future leakage)
+        # Kernel=6, Stride=4. To prevent model from seeing future bytes,
+        # we pad only on the LEFT (past) side.
+        # Padding size = kernel_size - stride = 6 - 4 = 2
+        x = torch.nn.functional.pad(x, (2, 0))  # (left, right)
+        
+        # 4. Apply Patching
         x = self.patch_conv(x)
         
         # 4. Transpose back

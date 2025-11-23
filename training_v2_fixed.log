@@ -1,0 +1,46 @@
+nohup: ignoring input
+============================================================
+AGIFORMER PHASE 8: Scaling & Emergence (100M)
+============================================================
+
+🚀 Initializing Scaled Model...
+   Architecture: 12 layers × 768 dim
+   Parameters: 159.2M
+   Device: cuda
+
+📚 Loading Turkish Wikipedia Data...
+
+⚙️  Training Configuration:
+   Batch Size: 2 (effective: 8)
+   Max Steps: 50,000
+   Target Duration: ~5-7 days on T4
+
+▶️  Starting Training...
+
+Step     0/50000: Loss=5.5516 | BPC=8.0093 | LR=4.00e-07 | ETA=344.9h
+Step    10/50000: Loss=5.5149 | BPC=7.9564 | LR=4.40e-06 | ETA=41.9h
+Step    20/50000: Loss=5.4541 | BPC=7.8686 | LR=8.40e-06 | ETA=27.5h
+Step    30/50000: Loss=5.2932 | BPC=7.6365 | LR=1.24e-05 | ETA=22.5h
+Step    40/50000: Loss=5.1096 | BPC=7.3716 | LR=1.64e-05 | ETA=19.9h
+Step    50/50000: Loss=4.7502 | BPC=6.8531 | LR=2.04e-05 | ETA=18.4h
+Step    60/50000: Loss=4.4148 | BPC=6.3692 | LR=2.44e-05 | ETA=17.3h
+Step    70/50000: Loss=4.0915 | BPC=5.9027 | LR=2.84e-05 | ETA=16.5h
+Step    80/50000: Loss=3.9121 | BPC=5.6439 | LR=3.24e-05 | ETA=15.9h
+Step    90/50000: Loss=3.6881 | BPC=5.3208 | LR=3.64e-05 | ETA=15.5h
+Step   100/50000: Loss=3.5807 | BPC=5.1659 | LR=4.04e-05 | ETA=15.2h
+Step   110/50000: Loss=3.4564 | BPC=4.9866 | LR=4.44e-05 | ETA=14.9h
+Step   120/50000: Loss=3.4498 | BPC=4.9770 | LR=4.84e-05 | ETA=14.7h
+Step   130/50000: Loss=3.3631 | BPC=4.8519 | LR=5.24e-05 | ETA=14.5h
+Step   140/50000: Loss=3.5280 | BPC=5.0899 | LR=5.64e-05 | ETA=14.3h
+Step   150/50000: Loss=3.7077 | BPC=5.3490 | LR=6.04e-05 | ETA=14.1h
+Step   160/50000: Loss=3.2931 | BPC=4.7510 | LR=6.44e-05 | ETA=14.0h
+Step   170/50000: Loss=3.1385 | BPC=4.5279 | LR=6.84e-05 | ETA=13.9h
+Step   180/50000: Loss=3.1560 | BPC=4.5531 | LR=7.24e-05 | ETA=13.8h
+Step   190/50000: Loss=3.1187 | BPC=4.4993 | LR=7.64e-05 | ETA=13.7h
+Step   200/50000: Loss=3.0745 | BPC=4.4356 | LR=8.04e-05 | ETA=13.6h
+Step   210/50000: Loss=3.1368 | BPC=4.5254 | LR=8.44e-05 | ETA=13.6h
+Step   220/50000: Loss=3.0185 | BPC=4.3548 | LR=8.84e-05 | ETA=13.5h
+Step   230/50000: Loss=2.9483 | BPC=4.2535 | LR=9.24e-05 | ETA=13.5h
+Step   240/50000: Loss=2.9077 | BPC=4.1949 | LR=9.64e-05 | ETA=13.4h
+Step   250/50000: Loss=3.0686 | BPC=4.4270 | LR=1.00e-04 | ETA=13.3h
+Step   260/50000: Loss=3.2521 | BPC=4.6919 | LR=1.04e-04 | ETA=13.3h
