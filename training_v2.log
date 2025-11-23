@@ -1,0 +1,19 @@
+nohup: ignoring input
+============================================================
+AGIFORMER PHASE 8: Scaling & Emergence (100M)
+============================================================
+
+🚀 Initializing Scaled Model...
+   Architecture: 12 layers × 768 dim
+   Parameters: 159.2M
+   Device: cuda
+
+📚 Loading Turkish Wikipedia Data...
+
+⚙️  Training Configuration:
+   Batch Size: 2 (effective: 8)
+   Max Steps: 50,000
+   Target Duration: ~5-7 days on T4
+
+▶️  Starting Training...
+
