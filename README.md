@@ -1,13 +1,14 @@
 # AGIFORMER: Byte-Level Language Model with Neuroplasticity
 
-> **Status:** Phase 7 - Curriculum Learning ✅ **Complete**  
-> **Latest Achievement:** 20K curriculum training with 77% BPC reduction
+> **Status:** Phase 9 - Architecture v2.0 Training 🚀 **In Progress**  
+> **Latest Achievement:** v2.0 Architecture implemented & verified (Input-Dependent Memory, Soft Patching, ACT)
 
 A research implementation of a byte-level language model featuring:
-- 🧠 **Hebbian Memory** with dynamic neuroplasticity
+- 🧠 **Hebbian Memory** with **Input-Dependent Decay** (Selective Forgetting)
 - 📚 **Curriculum Learning** (3-stage developmental approach)
-- 🔄 **System 2 Reasoning** (iterative thinking loop)
+- 🔄 **System 2 Reasoning** with **Adaptive Computation Time (ACT)**
 - 🚀 **Linear Complexity** attention mechanism
+- ⚡ **Parallel MLP Decoder** (No more GRU bottleneck)
 
 ## Quick Start
 
@@ -16,35 +17,36 @@ A research implementation of a byte-level language model featuring:
 pip install torch datasets tqdm
 ```
 
-### Training (Curriculum Learning)
+### Training (v2.0 Scaled)
 ```bash
-python train_curriculum.py  # 20K steps, 3 curriculum stages
+python train_scaled.py  # 50K steps, 129M params
 ```
 
 ### Inference
 ```bash
-python generate.py best_model_curriculum.pth
+python generate.py best_model_scaled.pth
 ```
 
 ### Testing
 ```bash
-python test_recall.py best_model_curriculum.pth  # Memory test
-python inspect_reasoning.py                        # System 2 diagnostics
+python test_recall_fixed.py  # Memory test (Needle in Haystack)
+python overfit_test.py       # Stability verification
 ```
 
-## Architecture
+## Architecture v2.0
 
 ```
-Bytes → Encoder (RoPE) → Hebbian Memory → Reasoning Loop → Local RNN → Bytes
-         (Patches)        (Dynamic λ)       (3 steps)        (Autoregressive)
+Bytes → Encoder (Soft Patching) → Hebbian Memory → Reasoning Loop → MLP Decoder → Bytes
+         (Overlap=2)              (Input-Dep λ)      (ACT Exit)      (Parallel)
 ```
 
-### Core Components
+### Core Components (v2.0 Upgrades)
 
-- **ByteLatentEncoder:** Patches bytes into latent vectors with RoPE
-- **HebbianMemory:** Fast weights with learnable decay + neuroplasticity (α)
-- **RecurrentReasoningBlock:** 3-step iterative thinking loop (System 2)
-- **LocalAutoregressiveHead:** GRU-based byte decoder
+- **ByteLatentEncoder:** Soft Patching (Kernel=6, Stride=4) for smoother boundaries.
+- **HebbianMemory:** Input-Dependent Decay ($\lambda_t = \sigma(W x_t)$) for selective memory.
+- **RecurrentReasoningBlock:** Adaptive Computation Time (ACT) with Exit Gate.
+- **LocalAutoregressiveHead:** Parallel MLP Decoder (4x faster than GRU).
+- **HybridBlock:** Gated Fusion (Sigmoid) + SwiGLU + RMSNorm.
 
 See [docs/architecture.md](docs/architecture.md) for technical details.
 
@@ -52,10 +54,10 @@ See [docs/architecture.md](docs/architecture.md) for technical details.
 
 ✅ **No Tokenization** - Universal byte-level processing  
 ✅ **Linear Complexity** - O(N) attention with Hebbian memory  
-✅ **Neuroplasticity** - Dynamic memory consolidation (α: 0.1 → 0.99)  
+✅ **Smart Memory** - Input-Dependent Decay (can "lock" important info)  
 ✅ **Curriculum Learning** - 3-stage developmental training  
-✅ **Active Reasoning** - Verified thinking loop (Δz = 12.7)  
-✅ **AMP Compatible** - Mixed precision training with stability fixes  
+✅ **Adaptive Reasoning** - Dynamic thinking steps (ACT)  
+✅ **Modern Components** - SwiGLU, RMSNorm, Soft Patching  
 
 ## Curriculum Learning (Phase 7)
 

@@ -786,18 +786,31 @@ agi-former/
 ## 9. Gelecek Çalışmalar
 
 ### 9.1 Kısa Vadeli (1-2 Ay)
+    
+**1. Phase 9: v2.0 Mimari Yükseltmesi (TAMAMLANDI)**
+- **Hedef:** "Kör Hafıza" ve "Yama Süreksizliği" sorunlarını çözmek.
+- **Durum:** Kodlandı, doğrulandı ve eğitim başlatıldı.
 
-**1. Phase 8 Tamamlanması**
-- 129M model - 50K adım eğitimi
-- Hedef BPC: < 1.5
-- Semantic emergence doğrulaması
+**2. Phase 9 Detayları (v2.0 Değişiklikleri):**
 
-**2. Test Suite Genişletmesi**
-- Named Entity Recognition (NER)
-- Question Answering (basit)
-- Sentiment Analysis
+| Bileşen | Eski (v1.0) | Yeni (v2.0) | Neden? |
+|---------|-------------|-------------|--------|
+| **Hafıza** | Statik Decay | **Input-Dependent Decay** | Modelin neyi unutup neyi saklayacağını seçebilmesi için. |
+| **Encoder** | Hard Patching (4/4) | **Soft Patching (6/4)** | Yama sınırlarındaki bilgi kaybını önlemek (Overlap). |
+| **Decoder** | GRU (Serial) | **MLP (Parallel)** | Hız ve stabilite. GRU darboğazını kaldırmak. |
+| **Reasoning** | Sabit 3 Adım | **ACT (Adaptive)** | Kolay tokenlar için hızlı, zorlar için derin düşünme. |
+| **Fusion** | Toplama (+) | **Gated Fusion** | Hafıza gürültüsünü filtrelemek. |
+| **Core** | GELU / LayerNorm | **SwiGLU / RMSNorm** | Modern LLM standartlarını yakalamak. |
 
-**3. Fine-tuning Deneyleri**
+**3. Beklenen Etki:**
+- **Recall:** "Samanlıkta İğne" testinde %100 başarı.
+- **Akıcılık:** Yama sınırlarındaki "kekeleme"nin (stutter) yok olması.
+- **Hız:** Paralel decoder sayesinde %20-30 eğitim hızı artışı.
+
+**4. Sonraki Adımlar:**
+- 50K adım eğitimin tamamlanması.
+- `test_recall_fixed.py` ile hafıza testinin tekrarlanması.
+
 - Domain-specific datasets (hukuk, tıp)
 - Instruction-following (çok az veri ile)
 
