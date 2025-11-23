@@ -181,14 +181,13 @@ def validate(model, val_loader, criterion):
             input_seq = input_seq.to(DEVICE)
             target_seq = target_seq.to(DEVICE)
             
-            with torch.cuda.amp.autocast(enabled=(DEVICE=='cuda')):
-                logits = model(input_seq, target_bytes=target_seq)
-                
-                B, N, P, V = logits.shape
-                loss = criterion(
-                    logits.contiguous().view(-1, V),
-                    target_seq.contiguous().view(-1)
-                )
+            logits = model(input_seq, target_bytes=target_seq)
+            
+            B, N, P, V = logits.shape
+            loss = criterion(
+                logits.contiguous().view(-1, V),
+                target_seq.contiguous().view(-1)
+            )
             
             total_loss += loss.item()
             count += 1
