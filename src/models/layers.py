@@ -1,15 +1,14 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-22
+## Modified: 2025-11-23
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .memory import HebbianMemory  # NEW IMPORT
+from .memory import HebbianMemory
 
 class SlidingWindowAttention(nn.Module):
     """
     Local Attention mechanism restricted to a sliding window.
-    Using standard SDPA for stability.
     """
     def __init__(self, d_model: int, num_heads: int, window_size: int):
         super().__init__()
@@ -57,7 +56,8 @@ class HybridBlock(nn.Module):
         # Local Precision
         self.attn = SlidingWindowAttention(d_model, num_heads, window_size)
         
-        # Global Context (Hebbian Memory) - Replaces LinearAttention
+        # Global Context (Hebbian Memory)
+        # Replaces the static LinearAttention with dynamic Fast Weights
         self.memory = HebbianMemory(d_model, num_heads, dropout)
         
         self.out_proj = nn.Linear(d_model, d_model)
@@ -74,9 +74,9 @@ class HybridBlock(nn.Module):
         residual = x
         x_norm = self.norm1(x)
         
-        # Parallel Branches
+        # Parallel Branches: Local Attention + Global Hebbian Memory
         attn_out = self.attn(x_norm)
-        memory_out = self.memory(x_norm) # Using Hebbian Memory
+        memory_out = self.memory(x_norm)
         
         # Fusion
         x = residual + self.out_proj(attn_out + memory_out)

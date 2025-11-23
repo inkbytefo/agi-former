@@ -75,6 +75,7 @@ def train_turkish():
     
     # Optimizer
     optimizer = optim.AdamW(model.parameters(), lr=BASE_LR)
+    scaler = torch.cuda.amp.GradScaler() # AMP Scaler
     criterion = nn.CrossEntropyLoss()
     
     # Training loop
@@ -101,15 +102,18 @@ def train_turkish():
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = lr
             
-            # Forward
-            logits = model(input_seq, target_bytes=target_seq)
+            optimizer.zero_grad()
             
-            # Loss
-            B, N, P, V = logits.shape
-            loss = criterion(
-                logits.contiguous().view(-1, V),
-                target_seq.contiguous().view(-1)
-            )
+            # Forward with AMP
+            with torch.cuda.amp.autocast(enabled=(DEVICE=='cuda')):
+                logits = model(input_seq, target_bytes=target_seq)
+                
+                # Loss
+                B, N, P, V = logits.shape
+                loss = criterion(
+                    logits.contiguous().view(-1, V),
+                    target_seq.contiguous().view(-1)
+                )
             
             # Check for NaN
             if torch.isnan(loss):
@@ -119,11 +123,12 @@ def train_turkish():
             # BPC (Bits Per Character)
             bpc = loss.item() / torch.log(torch.tensor(2.0)).item()
             
-            # Backward
-            optimizer.zero_grad()
-            loss.backward()
+            # Backward with Scaler
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             
             # Log
             current_lr = optimizer.param_groups[0]['lr']
@@ -176,13 +181,14 @@ def validate(model, val_loader, criterion):
             input_seq = input_seq.to(DEVICE)
             target_seq = target_seq.to(DEVICE)
             
-            logits = model(input_seq, target_bytes=target_seq)
-            
-            B, N, P, V = logits.shape
-            loss = criterion(
-                logits.contiguous().view(-1, V),
-                target_seq.contiguous().view(-1)
-            )
+            with torch.cuda.amp.autocast(enabled=(DEVICE=='cuda')):
+                logits = model(input_seq, target_bytes=target_seq)
+                
+                B, N, P, V = logits.shape
+                loss = criterion(
+                    logits.contiguous().view(-1, V),
+                    target_seq.contiguous().view(-1)
+                )
             
             total_loss += loss.item()
             count += 1
