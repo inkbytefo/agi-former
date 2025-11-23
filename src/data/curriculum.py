@@ -13,15 +13,32 @@ def prepare_dictionary_data(data_dir="./data"):
         
     print("[Curriculum] Downloading Dictionary Dataset (Stage 1)...")
     try:
-        # Using a known TDK dictionary dataset
+        # Candidate 1: TDK Turkish Words (might be gated)
+        print("[Curriculum] Trying 'erogluegemen/TDK_Turkish_Words'...")
         dataset = load_dataset("erogluegemen/TDK_Turkish_Words", split="train")
-        
+    except Exception as e1:
+        print(f"⚠️ Candidate 1 failed: {e1}")
+        try:
+            # Candidate 2: TURNA Dictionary (might be open)
+            print("[Curriculum] Trying 'Marmara-NLP/TURNA-finetuned-dictionary-tr'...")
+            dataset = load_dataset("Marmara-NLP/TURNA-finetuned-dictionary-tr", split="train")
+        except Exception as e2:
+            print(f"⚠️ Candidate 2 failed: {e2}")
+            print("Fallback: Using clean Wikipedia data for Stage 1")
+            return None
+
+    try:
         collected_bytes = []
         print("[Curriculum] Processing Dictionary...")
         for item in tqdm(dataset):
-            # Format: "Kelime: Anlam.\n\n"
-            word = item.get('madde', '').strip()
-            meaning = item.get('anlam', '').strip()
+            # Handle different column names
+            # erogluegemen: 'madde', 'anlam'
+            # TURNA: might be different, let's inspect or use .get with defaults
+            # TURNA usually has 'instruction' (word) and 'output' (definition) or similar if it's an instruction set
+            # Let's assume standard text/summary or try to guess
+            
+            word = item.get('madde', item.get('word', item.get('instruction', ''))).strip()
+            meaning = item.get('anlam', item.get('definition', item.get('output', ''))).strip()
             
             if word and meaning:
                 text = f"{word}: {meaning}.\n\n"
@@ -34,8 +51,7 @@ def prepare_dictionary_data(data_dir="./data"):
         print(f"[Curriculum] Stage 1 Data Ready: {len(full_data)/1e6:.1f}MB")
         return output_path
     except Exception as e:
-        print(f"⚠️ Failed to load dictionary dataset: {e}")
-        print("Fallback: Using clean Wikipedia data for Stage 1")
+        print(f"⚠️ Processing failed: {e}")
         return None
 
 def prepare_stories_data(data_dir="./data"):
