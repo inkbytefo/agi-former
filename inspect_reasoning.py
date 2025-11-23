@@ -1,5 +1,5 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-22
+## Modified: 2025-11-23
 
 import torch
 import torch.nn.functional as F
@@ -10,10 +10,12 @@ import numpy as np
 def inspect_system_2(model_path):
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # Config (Train ile aynı)
-    D_MODEL = 512
-    N_LAYERS = 6
+    # Config (Scaled v2.0)
+    D_MODEL = 768
+    N_LAYERS = 12
+    NUM_HEADS = 12
     PATCH_SIZE = 4
+    WINDOW_SIZE = 256
     THINKING_STEPS = 3
     
     print(f"Inspecting {model_path} on {DEVICE}...")
@@ -21,16 +23,22 @@ def inspect_system_2(model_path):
     model = AGIFORMER(
         d_model=D_MODEL, 
         n_layers=N_LAYERS, 
+        num_heads=NUM_HEADS,
         patch_size=PATCH_SIZE,
+        window_size=WINDOW_SIZE,
         thinking_steps=THINKING_STEPS
     ).to(DEVICE)
     
-    state_dict = torch.load(model_path, map_location=DEVICE)
-    model.load_state_dict(state_dict)
-    model.eval()
+    if os.path.exists(model_path):
+        state_dict = torch.load(model_path, map_location=DEVICE)
+        model.load_state_dict(state_dict)
+        model.eval()
+    else:
+        print(f"Model {model_path} not found! Using random weights for demo.")
+        model.eval()
     
     # Hook mekanizması: Reasoning bloğundaki gate ve update değerlerini yakalayalım
-    stats = {"gates": [], "updates": [], "z_diff": []}
+    stats = {"z_diff": []}
     
     def hook_fn(module, input, output):
         # Input is tuple (x,), output is refined x
@@ -41,9 +49,6 @@ def inspect_system_2(model_path):
         # L2 Distance per token
         diff = torch.norm(z_out - z_in, dim=-1).mean().item()
         stats["z_diff"].append(diff)
-        
-        # We can't easily hook internal variables of the forward loop without modifying the class.
-        # Instead, we will manually run the reasoning logic here to inspect.
     
     # Register hook on the reasoning block
     handle = model.reasoning.register_forward_hook(hook_fn)
@@ -62,17 +67,19 @@ def inspect_system_2(model_path):
         _ = model(x)
         
     # Manual Inspection of Internal Reasoning Weights
-    # Check if Gate biases are negative (which would mean closed gate by default)
     gate_bias_mean = model.reasoning.gate.bias.mean().item()
+    halt_bias_mean = model.reasoning.halt_unit.bias.mean().item()
     
-    print("\n--- SYSTEM 2 DIAGNOSTICS ---")
+    print("\n--- SYSTEM 2 DIAGNOSTICS (v2.0) ---")
     print(f"1. Latent Refinement (Thinking Magnitude):")
     print(f"   Average Euclidean Distance (z_out - z_in): {np.mean(stats['z_diff']):.4f}")
     print(f"   (If close to 0.0, the model is SKIPPING the thinking step.)")
     
-    print(f"\n2. Gate Bias Statistics:")
-    print(f"   Mean Bias: {gate_bias_mean:.4f}")
-    print(f"   (Negative values suggest the model prefers to keep the initial thought.)")
+    print(f"\n2. Gate Statistics:")
+    print(f"   Update Gate Bias Mean: {gate_bias_mean:.4f}")
+    print(f"   Halt Unit Bias Mean:   {halt_bias_mean:.4f}")
+    print(f"   (Positive Halt Bias -> Prefers to STOP thinking)")
+    print(f"   (Negative Halt Bias -> Prefers to CONTINUE thinking)")
     
     print(f"\n3. Parameter Health:")
     mlp_weight_grad = model.reasoning.think_mlp[0].weight.std().item()
@@ -83,7 +90,7 @@ def inspect_system_2(model_path):
     if avg_diff < 0.01:
         print("\n[RESULT] SYSTEM 2 IS DORMANT (Collapsed).")
         print("Reason: The model learned that 'not thinking' is safer for loss.")
-    elif avg_diff > 10.0:
+    elif avg_diff > 20.0:
         print("\n[RESULT] SYSTEM 2 IS UNSTABLE (Exploding).")
     else:
         print("\n[RESULT] SYSTEM 2 IS ACTIVE.")
@@ -93,4 +100,4 @@ def inspect_system_2(model_path):
     handle.remove()
 
 if __name__ == "__main__":
-    inspect_system_2("best_model.pth")
+    inspect_system_2("best_model_scaled.pth")

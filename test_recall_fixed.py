@@ -50,9 +50,17 @@ def run_recall_test():
         # Sadece 4-8 byte (1-2 patch) üretmemiz yeterli, cevap kısa
         for _ in range(4): 
             ctx = torch.tensor(generated[-1024:], dtype=torch.long).unsqueeze(0).to(DEVICE)
-            logits = model(ctx, temperature=0.1) # Çok düşük temp (Greedy)
-            last_patch = logits[0, -1, :].cpu().tolist()
-            generated.extend(last_patch)
+            
+            # v2.0: forward returns logits (B, N, 4, 256)
+            logits = model(ctx) 
+            
+            # Get last patch logits: (4, 256)
+            last_patch_logits = logits[0, -1, :, :]
+            
+            # Greedy decoding (argmax)
+            predicted_bytes = torch.argmax(last_patch_logits, dim=-1).tolist()
+            
+            generated.extend(predicted_bytes)
             print(".", end="", flush=True)
             
     full_text = bytes(generated).decode('utf-8', errors='replace')
