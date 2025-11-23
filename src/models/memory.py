@@ -37,6 +37,18 @@ class HebbianMemory(nn.Module):
         self.decay_logits = nn.Parameter(torch.zeros(num_heads)) 
         
         self.norm = nn.LayerNorm(d_model)
+        
+        # Plasticity Factor (Alpha) - Controlled externally
+        self.plasticity = 1.0
+
+    def set_plasticity(self, alpha):
+        """
+        Updates the plasticity coefficient (alpha).
+        alpha: float in [0, 1]. 
+               0.1 -> Childhood (Fast forgetting)
+               0.99 -> Adulthood (Stable memory)
+        """
+        self.plasticity = alpha
 
     def forward(self, x):
         B, L, D = x.shape
@@ -64,6 +76,11 @@ class HebbianMemory(nn.Module):
         # This prevents overflow. 0.99^-1024 ~= 29468 (Safe for FP32)
         raw_sigmoid = torch.sigmoid(self.decay_logits).view(1, 1, H, 1)
         lambdas = 0.99 + (0.01 * raw_sigmoid)
+        
+        # Apply Plasticity Schedule
+        # Effective Lambda = Lambda * Alpha
+        # If Alpha is low (childhood), decay is very fast.
+        lambdas = lambdas * self.plasticity
         
         # 4. Parallel Hebbian Update
         # Formula: O_i = (Q_i * sum_{j=1}^i lambda^{i-j} K_j^T V_j)

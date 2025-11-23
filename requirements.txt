@@ -2,3 +2,5 @@ torch
 numpy
 huggingface_hub
 datasets
+
+gradio
