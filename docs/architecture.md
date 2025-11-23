@@ -1,21 +1,21 @@
-# Architecture Guide
+# Architecture Guide v2.0
 
 ## Overview
 
-AGIFORMER implements a novel hybrid architecture combining byte-level processing, linear attention, and iterative reasoning.
+AGIFORMER v2.0 implements a novel hybrid architecture combining byte-level processing, linear attention, and iterative reasoning with adaptive computation.
 
 ## Pipeline Flow
 
 ```
 Input Bytes
     ↓
-ByteLatentEncoder (with RoPE)
+ByteLatentEncoder (Soft Patching + RoPE)
     ↓
-HybridBlock × N (Linear Attention + Sliding Window)
+HybridBlock × N (Gated Fusion: Linear Attn + Sliding Window + Hebbian Memory)
     ↓
-RecurrentReasoningBlock (System 2 - 3 steps)
+RecurrentReasoningBlock (System 2 - ACT with Exit Gate)
     ↓
-LocalAutoregressiveHead (GRU-based decoder)
+LocalAutoregressiveHead (Parallel MLP Decoder)
     ↓
 Output Bytes
 ```
@@ -27,19 +27,19 @@ Output Bytes
 **File:** `src/models/encoder.py`
 
 ### Purpose
-Converts raw byte sequences into latent patches with positional information.
+Converts raw byte sequences into latent patches with positional information, using soft boundaries to prevent discontinuities.
 
-### Architecture
+### Architecture (v2.0)
 - **Input:** `(Batch, Seq_Len)` bytes (0-255)
 - **Embedding:** `nn.Embedding(256, d_model)`
-- **Patching:** Reshape to `(Batch, Num_Patches, Patch_Size, d_model)`
-- **RoPE:** Rotary Positional Embeddings for length generalization
-- **Projection:** Linear layer to final latent dimension
+- **Soft Patching:** `Conv1d(kernel=6, stride=4)` -> Overlap of 2 bytes.
+- **RoPE:** Rotary Positional Embeddings for length generalization.
+- **Normalization:** RMSNorm.
 - **Output:** `(Batch, Num_Patches, d_model)`
 
 ### Key Design Decisions
-- **Why RoPE?** Enables extrapolation to longer sequences than training
-- **Why Patching?** Reduces sequence length by factor of `patch_size` (default: 4)
+- **Why Soft Patching?** Prevents "stuttering" at patch boundaries by allowing information to bleed across patches.
+- **Why RoPE?** Enables extrapolation to longer sequences than training.
 
 ---
 
@@ -61,84 +61,72 @@ V = Wv * x
 Attention(Q, K, V) = (Q @ cumsum(K ⊗ V)) / (Q @ cumsum(K) + ε)
 ```
 
-**Stability Fixes:**
-- `elu(x) + 1.0 + 1e-4` ensures strict positivity (prevents division by zero)
-- `Q` scaled by `sqrt(head_dim)` to control magnitude
-- Layer norm on output
-
 #### 2.2 SlidingWindowAttention
 **Complexity:** $O(N × window_size)$
+**Purpose:** High-precision local context.
 
-**Implementation:**
+#### 2.3 HebbianMemory (Input-Dependent)
+**File:** `src/models/memory.py`
+
+**v2.0 Upgrade:**
+- **Old:** Static decay $\lambda$.
+- **New:** Input-Dependent Decay $\lambda_t = \sigma(W_{decay} x_t)$.
+- **Effect:** Model can selectively "lock" important information (e.g., names, dates) while forgetting noise.
+
+### Fusion (Gated)
 ```python
-scores = (Q @ K.T) / sqrt(d_k)
-mask = causal_mask | window_mask  # Blocks far tokens
-scores = scores.masked_fill(mask, -1e4)  # Safe masking
-attn = softmax(scores)
-out = attn @ V
+g = sigmoid(Gate(x))
+output = g * LocalAttn + (1-g) * GlobalMemory
 ```
+- Allows the model to dynamically choose between local precision and global context.
 
-**Why Manual?** PyTorch's `scaled_dot_product_attention` was unstable with custom masks.
-
-### Fusion
-```python
-- **Residual Connection:** Allows model to skip thinking if not needed
-- **Pre-Norm:** Stabilizes deep iteration
-
-### Measured Activity
-- **Latent Change:** Δz = 12.7 (Euclidean distance)
-- **Gate Bias:** -0.0065 (near neutral)
-- **Interpretation:** Model actively refines latents by ~56% per dimension
+### MLP (SwiGLU)
+- Replaced GELU with SwiGLU for better capacity.
+- Replaced LayerNorm with RMSNorm for stability.
 
 ---
 
-## 4. LocalAutoregressiveHead
+## 3. RecurrentReasoningBlock (System 2)
+
+**File:** `src/models/reasoning.py`
+
+### Purpose
+"Thinking for time" - Iterative refinement of latent representations.
+
+### Mechanism (ACT - Adaptive Computation Time)
+```python
+for step in range(max_steps=3):
+    # Refine
+    z_new = z + MLP(RMSNorm(z))
+    
+    # Exit Gate
+    p_halt = sigmoid(HaltNet(z))
+    
+    # Soft Update
+    z = z + (1 - p_halt) * update
+```
+- **Effect:** If `p_halt` is high (confident), the state stops updating.
+- **Benefit:** Efficient compute allocation.
+
+---
+
+## 4. LocalAutoregressiveHead (Decoder)
 
 **File:** `src/models/agiformer.py`
 
 ### Purpose
-Decodes latent patches into byte sequences autoregressively.
+Decodes latent patches into byte sequences.
 
-### Architecture
+### Architecture (v2.0 - Parallel MLP)
+- **Old:** GRU (Sequential, Slow).
+- **New:** Parallel MLP.
+- **Input:** Latent Vector $z$ (d_model).
+- **Output:** $4 \times 256$ logits (predicts 4 bytes at once).
 
-#### Training Mode
-```python
-# Teacher forcing
-inputs = [SOS, target[0], target[1], ..., target[P-2]]
-targets = [target[0], target[1], ..., target[P-1]]
-
-emb = ByteEmb(inputs)                    # (B*N, P, H)
-context = LatentProj(latent).expand()     # (B*N, P, H)
-rnn_in = concat([emb, context], dim=-1)  # (B*N, P, 2H)
-
-out, _ = GRU(rnn_in)
-logits = Linear(out)  # (B*N, P, 256)
-```
-
-#### Inference Mode
-```python
-current = SOS
-hidden = None
-
-for i in range(patch_size):
-    emb = ByteEmb(current)
-    rnn_in = concat([emb, latent_context], dim=-1)
-    out, hidden = GRU(rnn_in, hidden)
-    logit = Linear(out)
-    
-    # Sampling
-    if temperature > 0:
-        next_byte = multinomial(softmax(logit / temp))
-    else:
-        next_byte = argmax(logit)
-    
-    current = next_byte
-```
-
-### Key Design
-- **Concatenation (not Addition):** Preserves signal strength
-- **GRU State:** Carries info across steps within a patch
-- **Temperature Sampling:** Breaks repetition loops
+**Why MLP?**
+- Removes the sequential bottleneck of GRU.
+- Allows the global model to fully control the patch content.
+- Faster training and inference.
 
 ---
 
@@ -153,85 +141,23 @@ BPC = loss / ln(2)  # Bits per character
 **Metric:** BPC (Bits Per Character) - lower is better
 - Random baseline: 8.0 BPC
 - Good model: < 1.5 BPC
-- AGIFORMER: 2.26 BPC (undertrained but stable)
+- AGIFORMER v1.0: 1.85 BPC
+- AGIFORMER v2.0 Target: < 1.5 BPC
 
 ---
 
-## Hyperparameters
+## Hyperparameters (Scaled v2.0)
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| `d_model` | 512 | Balance capacity/speed |
-| `n_layers` | 6 | Deep enough for complexity |
-| `num_heads` | 8 | Standard for 512-D |
+| `d_model` | 768 | Increased capacity (100M+) |
+| `n_layers` | 12 | Deeper reasoning |
+| `num_heads` | 12 | Aspect ratio maintained |
 | `patch_size` | 4 | 4× compression |
-| `window_size` | 128 | Local attention context |
-| `thinking_steps` | 3 | System 2 iterations |
-| `learning_rate` | 3e-4 | With warmup |
-| `batch_size` | 4 | GPU memory limit |
-
----
-
-## Numerical Stability
-
-### Challenges & Solutions
-
-1. **Linear Attention Division by Zero**
-   - **Problem:** `elu(x) + 1.0` can = 0 if x very negative
-   - **Solution:** `elu(x) + 1.0 + 1e-4` (strict positivity)
-
-2. **SDPA Masking Instability**
-   - **Problem:** NaN in `scaled_dot_product_attention` with bool masks
-   - **Solution:** Manual attention with `-1e4` instead of `-inf`
-
-3. **System 2 Explosion**
-   - **Problem:** Iterative updates could amplify errors
-   - **Solution:** Gated residuals + pre-norm + small init
-
-4. **Gradient Clipping**
-   - **Value:** 0.5 (aggressive)
-   - **Reason:** Prevents spikes during early training
-
----
-
-## Memory & Compute
-
-**Training (Batch=4, Seq=1024):**
-- GPU Memory: ~6 GB (T4)
-- Time/Step: ~180ms
-- Total for 5000 steps: ~15 min
-
-**Inference (Seq=200):**
-- Latency: ~50ms (greedy)
-- Memory: ~2 GB
-
-**Scaling:**
-- Linear Attention: $O(N)$ time
-- System 2: $O(k × N)$ where k = thinking_steps
-
----
-
-## Comparison to Baselines
-
-| Feature | AGIFORMER | GPT-2 | Mamba |
-|---------|-----------|-------|-------|
-| Tokenization | None (bytes) | BPE | BPE |
-| Attention | Linear ($O(N)$) | Quadratic | N/A |
-| Recurrence | System 2 Loop | None | SSM |
-| BPC (enwik8) | 2.26 | ~1.1 | ~1.0 |
-| Training Time | 15 min | Hours | Hours |
-
-**Note:** BPC gap due to undertrained model, not architecture limit.
-
----
-
-## Future Improvements
-
-1. **Longer Training:** Target BPC < 1.5
-2. **More Thinking Steps:** 3 → 5-7 for harder tasks
-3. **Sparse Experts:** Route different "thinking modes"
-4. **Memory Module:** External differentiable memory
-5. **Multi-Modal:** Extend to images/audio bytes
+| `window_size` | 256 | Wider local context |
+| `thinking_steps` | 3 | System 2 iterations (ACT) |
+| `learning_rate` | 2e-4 | Conservative for scale |
+| `batch_size` | 2 | T4 memory limit (Accum=4) |
 
 ---
 
@@ -240,4 +166,6 @@ BPC = loss / ln(2)  # Bits per character
 - **Linear Transformers:** Katharopoulos et al., 2020
 - **RoPE:** Su et al., 2021
 - **System 2 Deep Learning:** Bengio et al., 2019
-- **Mamba:** Gu & Dao, 2023
+- **Mamba:** Gu & Dao, 2023 (Input-Dependent Decay inspiration)
+- **SwiGLU:** Shazeer, 2020
+
