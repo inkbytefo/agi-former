@@ -48,13 +48,23 @@ def build_vocab_from_stream(text_iter: Iterable[str], root_limit: int, suffix_li
 
 
 def make_epoch_iterator(text_iter_fn, root2id, suffix2id, suffix_slots: int, batch_size: int, steps_per_epoch: int):
-    def _iter():
+    def _iter(max_seq_len: int = 256):
         steps = 0
         buf: List[str] = []
         for t in text_iter_fn():
             buf.append(t)
             if len(buf) >= batch_size:
-                seqs = [encode_text(x, root2id, suffix2id, suffix_slots, analyzer=None) for x in buf]
+                seqs = []
+                for x in buf:
+                    s = encode_text(x, root2id, suffix2id, suffix_slots, analyzer=None)
+                    if len(s) == 0:
+                        continue
+                    if len(s) > max_seq_len:
+                        s = s[:max_seq_len]
+                    seqs.append(s)
+                if not seqs:
+                    buf = []
+                    continue
                 max_len = max(len(s) for s in seqs)
                 B = len(seqs)
                 S = 1 + suffix_slots
@@ -81,12 +91,14 @@ def main():
     p.add_argument("--steps_per_epoch", type=int, default=1000)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--suffix_slots", type=int, default=5)
+    p.add_argument("--max_seq_len", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--warmup_steps", type=int, default=1000)
     p.add_argument("--decay_steps", type=int, default=10000)
     p.add_argument("--clip_norm", type=float, default=1.0)
     p.add_argument("--weight_decay", type=float, default=1e-4)
     p.add_argument("--wandb_mode", type=str, default="online")
+    p.add_argument("--precision", type=str, default="bf16", help="one of: none, bf16")
     args = p.parse_args()
 
     try:
@@ -106,6 +118,10 @@ def main():
         if wandb is not None:
             wandb.log(m)
 
+    mp_dtype = None
+    if args.precision.lower() == "bf16":
+        mp_dtype = jnp.bfloat16
+
     params, metrics = train_epochs(
         epoch_iter_factory,
         root2id,
@@ -120,8 +136,8 @@ def main():
         clip_norm=args.clip_norm,
         val_iterator=None,
         return_metrics=True,
-        mp_dtype=None,
-        use_remat=False,
+        mp_dtype=mp_dtype,
+        use_remat=True,
         log_callback=log_cb,
     )
 
