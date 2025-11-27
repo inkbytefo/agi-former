@@ -16,7 +16,7 @@ from src.data.morphology import build_vocab, encode_text, PAD_ID
 from src.training.train_loop import train_epochs
 
 
-def stream_texts(dataset: str = "wikipedia", config: Optional[str] = "20220301.tr", split: str = "train") -> Iterable[str]:
+def stream_texts(dataset: str = "wikimedia/wikipedia", config: Optional[str] = "20220301.tr", split: str = "train") -> Iterable[str]:
     try:
         ds = load_dataset(dataset, config, split=split, streaming=True)
         for ex in ds:
@@ -24,11 +24,18 @@ def stream_texts(dataset: str = "wikipedia", config: Optional[str] = "20220301.t
             if t:
                 yield t
     except Exception:
-        ds = load_dataset("mc4", "tr", split=split, streaming=True)
-        for ex in ds:
-            t = ex.get("text") or ""
-            if t:
-                yield t
+        try:
+            ds = load_dataset("oscar-corpus/OSCAR-2201", "tr", split=split, streaming=True)
+            for ex in ds:
+                t = ex.get("text") or ""
+                if t:
+                    yield t
+        except Exception:
+            ds = load_dataset("musabg/wikipedia-tr", split=split, streaming=True)
+            for ex in ds:
+                t = ex.get("text") or ""
+                if t:
+                    yield t
 
 
 def build_vocab_from_stream(text_iter: Iterable[str], root_limit: int, suffix_limit: int, sample_limit: int) -> tuple:
@@ -66,7 +73,7 @@ def make_epoch_iterator(text_iter_fn, root2id, suffix2id, suffix_slots: int, bat
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--project", type=str, default="agiformer-phase9")
-    p.add_argument("--dataset", type=str, default="wikipedia")
+    p.add_argument("--dataset", type=str, default="wikimedia/wikipedia")
     p.add_argument("--config", type=str, default="20220301.tr")
     p.add_argument("--split", type=str, default="train")
     p.add_argument("--vocab_samples", type=int, default=50000)
@@ -136,4 +143,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
