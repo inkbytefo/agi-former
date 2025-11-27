@@ -17,9 +17,9 @@ def swa_init(d_model: int, num_heads: int, key: random.PRNGKey):
 def linear(x, W, b):
     return jnp.einsum('bld,df->blf', x, W) + b
 
-def swa_apply(params, x, window_size: int):
+def swa_apply(params, x, window_size: int, num_heads: int = None):
     B, L, D = x.shape
-    H = params["num_heads"]
+    H = int(params["num_heads"]) if num_heads is None else int(num_heads)
     E = D // H
     qkv = linear(x, params["W_qkv"], params["b_qkv"]).reshape(B, L, 3, H, E)
     q = qkv[:, :, 0]
@@ -96,7 +96,7 @@ def layer_norm(x, gamma, beta):
 def hybrid_block_apply(params, x, effort: float):
     residual = x
     x_norm = layer_norm(x, params["norm1_gamma"], params["norm1_beta"])
-    attn_out = swa_apply(params["attn"], x_norm, params["window_size"]) 
+    attn_out = swa_apply(params["attn"], x_norm, int(params["window_size"]), int(params["attn"]["num_heads"])) 
     memory_out = hebbian_memory_apply(params["memory"], x_norm, effort)
     g = jax.nn.sigmoid(jnp.einsum('bld,df->blf', x_norm, params["W_gate"]) + params["b_gate"]) 
     combined = g * attn_out + (1.0 - g) * memory_out
