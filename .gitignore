@@ -4,3 +4,7 @@ __pycache__/
 /data/
 .pytest_cache/
 .gemini/
+
+
+.github/instructions/kluster-code-verify.instructions.md
+.kluster

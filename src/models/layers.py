@@ -1,110 +1,105 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-23
+## Modified: 2025-11-27
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from .memory import HebbianMemory
+import jax
+import jax.numpy as jnp
+from jax import random, lax
+from .memory import hebbian_memory_init, hebbian_memory_apply
 
-class SlidingWindowAttention(nn.Module):
-    """
-    Local Attention mechanism restricted to a sliding window.
-    """
-    def __init__(self, d_model: int, num_heads: int, window_size: int):
-        super().__init__()
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.window_size = window_size
-        self.head_dim = d_model // num_heads
-        
-        self.qkv = nn.Linear(d_model, 3 * d_model)
-        self.proj = nn.Linear(d_model, d_model)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, L, D = x.shape
-        H = self.num_heads
-        E = self.head_dim
-        scale = 1.0 / (E ** 0.5)
-        
-        qkv = self.qkv(x).reshape(B, L, 3, H, E).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        
-        # Manual Attention for Stability
-        scores = torch.matmul(q, k.transpose(-2, -1)) * scale
-        
-        # Construct Mask
-        ones = torch.ones(L, L, device=x.device, dtype=torch.bool)
-        causal_mask = ones.triu(1)
-        window_mask = ones.tril(-self.window_size)
-        mask = causal_mask | window_mask
-        
-        scores = scores.masked_fill(mask, -1e4)
-        attn = F.softmax(scores, dim=-1)
-        out = torch.matmul(attn, v)
-        
-        out = out.transpose(1, 2).reshape(B, L, D)
-        return self.proj(out)
+def swa_init(d_model: int, num_heads: int, key: random.PRNGKey):
+    k1, k2 = random.split(key)
+    W_qkv = random.normal(k1, (d_model, 3 * d_model)) * (1.0 / jnp.sqrt(d_model))
+    b_qkv = jnp.zeros((3 * d_model,))
+    W_proj = random.normal(k2, (d_model, d_model)) * (1.0 / jnp.sqrt(d_model))
+    b_proj = jnp.zeros((d_model,))
+    return {"W_qkv": W_qkv, "b_qkv": b_qkv, "W_proj": W_proj, "b_proj": b_proj, "num_heads": num_heads}
 
-class SwiGLU(nn.Module):
-    def __init__(self, d_model, hidden_dim, dropout=0.1):
-        super().__init__()
-        self.w1 = nn.Linear(d_model, hidden_dim)
-        self.w2 = nn.Linear(d_model, hidden_dim)
-        self.w3 = nn.Linear(hidden_dim, d_model)
-        self.dropout = nn.Dropout(dropout)
+def linear(x, W, b):
+    return jnp.einsum('bld,df->blf', x, W) + b
 
-    def forward(self, x):
-        return self.dropout(self.w3(F.silu(self.w1(x)) * self.w2(x)))
+def swa_apply(params, x, window_size: int):
+    B, L, D = x.shape
+    H = params["num_heads"]
+    E = D // H
+    qkv = linear(x, params["W_qkv"], params["b_qkv"]).reshape(B, L, 3, H, E)
+    q = qkv[:, :, 0]
+    k = qkv[:, :, 1]
+    v = qkv[:, :, 2]
+    scale = 1.0 / jnp.sqrt(E)
 
-class HybridBlock(nn.Module):
-    """
-    Combines Sliding Window Attention (Local) and Hebbian Memory (Global).
-    
-    v2.0 UPGRADE:
-    - Gated Fusion: Output = sigmoid(g)*Local + (1-g)*Global
-    - SwiGLU: Better activation function
-    - RMSNorm: Better stability
-    """
-    def __init__(self, d_model, num_heads, window_size, dropout):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(d_model) # Keeping LayerNorm for consistency with Encoder/Memory for now
-        
-        # Local Precision
-        self.attn = SlidingWindowAttention(d_model, num_heads, window_size)
-        
-        # Global Context (Hebbian Memory)
-        self.memory = HebbianMemory(d_model, num_heads, dropout)
-        
-        # v2.0: Gated Fusion
-        # Learned gate to balance Local vs Global
-        self.fusion_gate = nn.Linear(d_model, 1)
-        
-        self.out_proj = nn.Linear(d_model, d_model)
-        
-        # v2.0: SwiGLU MLP
-        self.mlp = SwiGLU(d_model, 4 * d_model, dropout)
-        self.norm_mlp = nn.LayerNorm(d_model)
+    def one_batch(qb, kb, vb):
+        ws = int(min(window_size, L))
+        Kbuf = jnp.zeros((ws, H, E))
+        Vbuf = jnp.zeros((ws, H, E))
+        ptr0 = jnp.array(0, dtype=jnp.int32)
+        count0 = jnp.array(0, dtype=jnp.int32)
+        def step(carry, inp):
+            Kbuf, Vbuf, ptr, count = carry
+            q_t, k_t, v_t = inp
+            Kbuf = lax.dynamic_update_slice(Kbuf, k_t[None, ...], (ptr, 0, 0))
+            Vbuf = lax.dynamic_update_slice(Vbuf, v_t[None, ...], (ptr, 0, 0))
+            ptr = (ptr + 1) % ws
+            count = jnp.minimum(count + 1, ws)
+            mask_vec = jnp.arange(ws) < count
+            Ks_h = jnp.transpose(Kbuf, (1, 0, 2))
+            Vs_h = jnp.transpose(Vbuf, (1, 0, 2))
+            scores = jnp.einsum('he,hwe->hw', q_t, Ks_h) * scale
+            scores = jnp.where(mask_vec[None, :], scores, -1e4)
+            attn = jax.nn.softmax(scores, axis=-1)
+            out = jnp.einsum('hw,hwe->he', attn, Vs_h)
+            return (Kbuf, Vbuf, ptr, count), out
+        (_, _, _, _), outs = lax.scan(step, (Kbuf, Vbuf, ptr0, count0), (qb, kb, vb))
+        return outs
 
-    def forward(self, x):
-        residual = x
-        x_norm = self.norm1(x)
-        
-        # Parallel Branches
-        attn_out = self.attn(x_norm)
-        memory_out = self.memory(x_norm)
-        
-        # v2.0: Gated Fusion
-        # g = sigmoid(W * x)
-        # If g -> 1, prefer Local Attention
-        # If g -> 0, prefer Global Memory
-        g = torch.sigmoid(self.fusion_gate(x_norm))
-        
-        combined = (g * attn_out) + ((1 - g) * memory_out)
-        
-        # Fusion
-        x = residual + self.out_proj(combined)
-        
-        # MLP
-        x = x + self.mlp(self.norm_mlp(x))
-        
-        return x
+    outs = jax.vmap(one_batch)(q, k, v)
+    out = outs.reshape(B, L, D)
+    out = linear(out, params["W_proj"], params["b_proj"])
+    return out
+
+def swiglu_init(d_model, hidden_dim, key: random.PRNGKey):
+    k1, k2, k3 = random.split(key, 3)
+    W1 = random.normal(k1, (d_model, hidden_dim)) * (1.0 / jnp.sqrt(d_model))
+    b1 = jnp.zeros((hidden_dim,))
+    W2 = random.normal(k2, (d_model, hidden_dim)) * (1.0 / jnp.sqrt(d_model))
+    b2 = jnp.zeros((hidden_dim,))
+    W3 = random.normal(k3, (hidden_dim, d_model)) * (1.0 / jnp.sqrt(hidden_dim))
+    b3 = jnp.zeros((d_model,))
+    return {"W1": W1, "b1": b1, "W2": W2, "b2": b2, "W3": W3, "b3": b3}
+
+def swiglu_apply(params, x):
+    a = jax.nn.silu(jnp.einsum('bld,df->blf', x, params["W1"]) + params["b1"])
+    b = jnp.einsum('bld,df->blf', x, params["W2"]) + params["b2"]
+    h = a * b
+    return jnp.einsum('blf,fd->bld', h, params["W3"]) + params["b3"]
+
+def hybrid_block_init(d_model, num_heads, window_size, key: random.PRNGKey):
+    k_attn, k_mem, k_gate, k_out, k_mlp = random.split(key, 5)
+    attn = swa_init(d_model, num_heads, k_attn)
+    memory = hebbian_memory_init(d_model, num_heads, k_mem)
+    W_gate = random.normal(k_gate, (d_model, 1)) * (1.0 / jnp.sqrt(d_model))
+    b_gate = jnp.zeros((1,))
+    W_out = random.normal(k_out, (d_model, d_model)) * (1.0 / jnp.sqrt(d_model))
+    b_out = jnp.zeros((d_model,))
+    norm1_gamma = jnp.ones((d_model,))
+    norm1_beta = jnp.zeros((d_model,))
+    norm_mlp_gamma = jnp.ones((d_model,))
+    norm_mlp_beta = jnp.zeros((d_model,))
+    mlp = swiglu_init(d_model, 4 * d_model, k_mlp)
+    return {"attn": attn, "memory": memory, "W_gate": W_gate, "b_gate": b_gate, "W_out": W_out, "b_out": b_out, "norm1_gamma": norm1_gamma, "norm1_beta": norm1_beta, "norm_mlp_gamma": norm_mlp_gamma, "norm_mlp_beta": norm_mlp_beta, "window_size": window_size, "mlp": mlp}
+
+def layer_norm(x, gamma, beta):
+    mean = jnp.mean(x, axis=-1, keepdims=True)
+    var = jnp.mean((x - mean) ** 2, axis=-1, keepdims=True)
+    xhat = (x - mean) / jnp.sqrt(var + 1e-5)
+    return gamma * xhat + beta
+
+def hybrid_block_apply(params, x, effort: float):
+    residual = x
+    x_norm = layer_norm(x, params["norm1_gamma"], params["norm1_beta"])
+    attn_out = swa_apply(params["attn"], x_norm, params["window_size"]) 
+    memory_out = hebbian_memory_apply(params["memory"], x_norm, effort)
+    g = jax.nn.sigmoid(jnp.einsum('bld,df->blf', x_norm, params["W_gate"]) + params["b_gate"]) 
+    combined = g * attn_out + (1.0 - g) * memory_out
+    x = residual + (jnp.einsum('bld,df->blf', combined, params["W_out"]) + params["b_out"]) 
+    x = x + swiglu_apply(params["mlp"], layer_norm(x, params["norm_mlp_gamma"], params["norm_mlp_beta"]))
+    return x

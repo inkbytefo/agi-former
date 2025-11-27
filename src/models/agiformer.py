@@ -1,51 +1,99 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-23
+## Modified: 2025-11-27
 
-import torch
-import torch.nn as nn
-from typing import Optional
-from .encoder import ByteLatentEncoder
-from .layers import HybridBlock
-from .reasoning import RecurrentReasoningBlock
+import jax
+import jax.numpy as jnp
+from jax import random
+from .encoder import encoder_init, encoder_apply
+from .layers import hybrid_block_init, hybrid_block_apply
+from .reasoning import reasoning_init, reasoning_apply
 
-class LocalAutoregressiveHead(nn.Module):
-    """
-    Decodes latent vectors back into bytes.
-    
-    v2.0 UPGRADE:
-    - Replaced GRU with Parallel MLP Decoder.
-    - Predicts all 4 bytes in the patch simultaneously.
-    - Faster and avoids sequential bottleneck.
-    """
-    def __init__(self, d_model, patch_size, hidden_dim=512):
-        super().__init__()
-        self.patch_size = patch_size
-        
-        # MLP Decoder
-        # Input: Latent (D)
-        # Output: Patch_Size * 256 (Logits for each byte in patch)
-        self.decoder = nn.Sequential(
-            nn.Linear(d_model, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, patch_size * 256)
-        )
+def byte_head_init(d_model, patch_size, key: random.PRNGKey):
+    k1, k2, k3 = random.split(key, 3)
+    W1 = random.normal(k1, (d_model, 512)) * (1.0 / jnp.sqrt(d_model))
+    b1 = jnp.zeros((512,))
+    W2 = random.normal(k2, (512, 512)) * (1.0 / jnp.sqrt(512))
+    b2 = jnp.zeros((512,))
+    W3 = random.normal(k3, (512, patch_size * 256)) * (1.0 / jnp.sqrt(512))
+    b3 = jnp.zeros((patch_size * 256,))
+    return {"W1": W1, "b1": b1, "W2": W2, "b2": b2, "W3": W3, "b3": b3, "patch_size": patch_size}
 
-    def forward(self, latents, target_bytes=None, temperature=0.0):
-        B, N, D = latents.shape
-        
-        # Predict all bytes at once
-        logits = self.decoder(latents) # (B, N, P*256)
-        logits = logits.view(B, N, self.patch_size, 256)
-        
-        return logits
+def byte_head_apply(params, latents):
+    B, N, D = latents.shape
+    h1 = jax.nn.gelu(jnp.einsum('bnd,df->bnf', latents, params["W1"]) + params["b1"]) 
+    h2 = jax.nn.gelu(jnp.einsum('bnf,fg->bng', h1, params["W2"]) + params["b2"]) 
+    logits = jnp.einsum('bng,gh->bnh', h2, params["W3"]) + params["b3"] 
+    logits = logits.reshape(B, N, params["patch_size"], 256) 
+    return logits
 
-    def _inference(self, latents, latent_context, temperature):
-        # Deprecated in v2.0 - forward handles everything
-        pass
+def morph_head_init(d_model, root_vocab, suffix_vocab, suffix_slots, key: random.PRNGKey):
+    k_root1, k_root2, k_slots, k_slot_emb = random.split(key, 4)
+    W1_root = random.normal(k_root1, (d_model, 512)) * (1.0 / jnp.sqrt(d_model))
+    b1_root = jnp.zeros((512,))
+    W2_root = random.normal(k_root2, (512, root_vocab)) * (1.0 / jnp.sqrt(512))
+    b2_root = jnp.zeros((root_vocab,))
+    slot_W1 = random.normal(k_slots, (suffix_slots, d_model, 512)) * (1.0 / jnp.sqrt(d_model))
+    slot_b1 = jnp.zeros((suffix_slots, 512))
+    slot_W2 = random.normal(random.fold_in(key, 99), (suffix_slots, 512, suffix_vocab)) * (1.0 / jnp.sqrt(512))
+    slot_b2 = jnp.zeros((suffix_slots, suffix_vocab))
+    slot_emb = random.normal(k_slot_emb, (suffix_slots, d_model)) * (1.0 / jnp.sqrt(d_model))
+    return {
+        "W1_root": W1_root, "b1_root": b1_root, "W2_root": W2_root, "b2_root": b2_root,
+        "slot_W1": slot_W1, "slot_b1": slot_b1, "slot_W2": slot_W2, "slot_b2": slot_b2,
+        "slot_emb": slot_emb, "suffix_slots": suffix_slots,
+    }
 
-class AGIFORMER(nn.Module):
+def morph_head_apply(params, latents):
+    B, N, D = latents.shape
+    h1 = jax.nn.gelu(jnp.einsum('bnd,df->bnf', latents, params["W1_root"]) + params["b1_root"]) 
+    root_logits = jnp.einsum('bnf,fg->bng', h1, params["W2_root"]) + params["b2_root"]
+    S = params["suffix_slots"]
+    slot_emb = params["slot_emb"]  # (S, D)
+    # Add slot embedding and apply per-slot classifiers
+    def one_slot(s):
+        x_s = latents + slot_emb[s][None, None, :]
+        h_s = jax.nn.gelu(jnp.einsum('bnd,df->bnf', x_s, params["slot_W1"][s]) + params["slot_b1"][s])
+        log_s = jnp.einsum('bnf,fg->bng', h_s, params["slot_W2"][s]) + params["slot_b2"][s]
+        return log_s
+    suffix_logits = jnp.stack([one_slot(s) for s in range(S)], axis=2)  # (B, N, S, Vsuffix)
+    return {"root": root_logits, "suffix": suffix_logits}
+
+def agiformer_init(d_model=512, n_layers=6, num_heads=8, patch_size=4, window_size=128, thinking_steps=3, key: random.PRNGKey = random.PRNGKey(0)):
+    enc = encoder_init(d_model, patch_size, random.fold_in(key, 1))
+    layers = [hybrid_block_init(d_model, num_heads, window_size, random.fold_in(key, 100 + i)) for i in range(n_layers)]
+    norm_gamma = jnp.ones((d_model,))
+    norm_beta = jnp.zeros((d_model,))
+    reason = reasoning_init(d_model, random.fold_in(key, 999))
+    byte_head = byte_head_init(d_model, patch_size, random.fold_in(key, 1000))
+    root_vocab = enc["root_vocab_size"]
+    suffix_vocab = enc["suffix_vocab_size"]
+    suffix_slots = 5
+    morph_head = morph_head_init(d_model, root_vocab, suffix_vocab, suffix_slots, random.fold_in(key, 1001))
+    return {
+        "encoder": enc, "layers": layers, "norm_gamma": norm_gamma, "norm_beta": norm_beta,
+        "reason": reason, "byte_head": byte_head, "morph_head": morph_head,
+        "thinking_steps": thinking_steps, "suffix_slots": suffix_slots
+    }
+
+def layer_norm(x, gamma, beta):
+    mean = jnp.mean(x, axis=-1, keepdims=True)
+    var = jnp.mean((x - mean) ** 2, axis=-1, keepdims=True)
+    xhat = (x - mean) / jnp.sqrt(var + 1e-5)
+    return gamma * xhat + beta
+
+def agiformer_apply(params, x, effort: float = 1.0):
+    raw_ndim = x.ndim
+    x = encoder_apply(params["encoder"], x)
+    for layer in params["layers"]:
+        x = hybrid_block_apply(layer, x, effort)
+    x = layer_norm(x, params["norm_gamma"], params["norm_beta"]) 
+    x = reasoning_apply(params["reason"], x, params["thinking_steps"], effort) 
+    if raw_ndim == 2:
+        return byte_head_apply(params["byte_head"], x)
+    else:
+        return morph_head_apply(params["morph_head"], x)
+
+class AGIFORMER:
     def __init__(
         self,
         d_model: int = 512,
@@ -53,29 +101,19 @@ class AGIFORMER(nn.Module):
         num_heads: int = 8,
         patch_size: int = 4,
         window_size: int = 128,
-        vocab_size: int = 256,
-        dropout: float = 0.1,
-        thinking_steps: int = 3
+        thinking_steps: int = 3,
+        key: random.PRNGKey = random.PRNGKey(0)
     ):
-        super().__init__()
-        
-        self.encoder = ByteLatentEncoder(d_model, patch_size, dropout)
-        
-        # Hybrid Blocks now use Hebbian Memory
-        self.layers = nn.ModuleList([
-            HybridBlock(d_model, num_heads, window_size, dropout)
-            for _ in range(n_layers)
-        ])
-        
-        self.norm_f = nn.LayerNorm(d_model)
-        self.reasoning = RecurrentReasoningBlock(d_model, thinking_steps, dropout)
-        self.head = LocalAutoregressiveHead(d_model, patch_size)
+        self.params = agiformer_init(d_model, n_layers, num_heads, patch_size, window_size, thinking_steps, key)
 
-    def forward(self, x, target_bytes=None, temperature=0.0):
-        x = self.encoder(x)
-        for layer in self.layers:
-            x = layer(x)
-        x = self.norm_f(x)
-        x = self.reasoning(x)
-        logits = self.head(x, target_bytes, temperature=temperature)
-        return logits
+    def forward(self, x):
+        return agiformer_apply(self.params, x)
+
+    def to(self, device):
+        return self
+
+    def eval(self):
+        return None
+
+    def load_state_dict(self, state):
+        return None

@@ -1,6 +1,10 @@
-torch
-numpy
 huggingface_hub
 datasets
-
 gradio
+jax
+jaxlib
+numpy
+jpype1
+optax
+stanza
+tqdm

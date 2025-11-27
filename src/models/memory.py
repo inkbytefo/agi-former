@@ -1,145 +1,65 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-23
+## Modified: 2025-11-27
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import math
+import jax
+import jax.numpy as jnp
+from jax import random, lax
 
-class RMSNorm(nn.Module):
-    def __init__(self, d_model, eps=1e-8):
-        super().__init__()
-        self.scale = nn.Parameter(torch.ones(d_model))
-        self.eps = eps
+def rmsnorm_apply(x, gamma):
+    norm = jnp.sqrt(jnp.mean(x ** 2, axis=-1, keepdims=True) + 1e-8)
+    return x * (1.0 / norm) * gamma
 
-    def forward(self, x):
-        norm = torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-        return x * norm * self.scale
+def hebbian_memory_init(d_model, num_heads, key):
+    k1, k2, k3 = random.split(key, 3)
+    W_qkv = random.normal(k1, (d_model, 3 * d_model)) * (1.0 / jnp.sqrt(d_model))
+    b_qkv = jnp.zeros((3 * d_model,))
+    W_out = random.normal(k2, (d_model, d_model)) * (1.0 / jnp.sqrt(d_model))
+    b_out = jnp.zeros((d_model,))
+    W_decay = random.normal(k3, (d_model, num_heads)) * 0.02
+    b_decay = jnp.ones((num_heads,)) * 4.0
+    gamma = jnp.ones((d_model,))
+    return {"W_qkv": W_qkv, "b_qkv": b_qkv, "W_out": W_out, "b_out": b_out, "W_decay": W_decay, "b_decay": b_decay, "gamma": gamma, "num_heads": num_heads}
 
-class HebbianMemory(nn.Module):
-    """
-    Hebbian Memory Module v2.0 (Input-Dependent Decay).
-    
-    Implements the update rule:
-    M_t = lambda_t * M_{t-1} + K_t * V_t^T
-    
-    UPGRADE v2.0:
-    - Decay (lambda) is now a function of input x_t: lambda_t = sigmoid(W * x_t)
-    - Allows the model to selectively forget or remember based on content.
-    """
-    def __init__(self, d_model, num_heads=8, dropout=0.1):
-        super().__init__()
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.head_dim = d_model // num_heads
-        
-        self.qkv = nn.Linear(d_model, 3 * d_model)
-        self.out_proj = nn.Linear(d_model, d_model)
-        self.dropout = nn.Dropout(dropout)
-        
-        # Feature map: ELU + 1 ensures positivity for valid probability kernel
-        self.feature_map = nn.ELU()
-        
-        # v2.0: Input-Dependent Decay Network
-        # Predicts a decay value for each head based on the input
-        self.decay_net = nn.Linear(d_model, num_heads)
-        
-        # Initialize decay to be sticky (high retention) initially
-        nn.init.constant_(self.decay_net.bias, 4.0) # sigmoid(4.0) ~= 0.98
-        nn.init.normal_(self.decay_net.weight, std=0.02)
-        
-        self.norm = RMSNorm(d_model)
-        
-        # Plasticity Factor (Alpha) - Controlled externally
-        self.plasticity = 1.0
+def elu(x):
+    return jnp.where(x > 0, x, jnp.exp(x) - 1)
 
-    def set_plasticity(self, alpha):
-        self.plasticity = alpha
+def linear(x, W, b):
+    return jnp.einsum('bld,df->blf', x, W) + b
 
-    @torch.amp.autocast('cuda', enabled=False)
-    def forward(self, x):
-        # CRITICAL: Bypass AMP for this entire module to prevent NaN
-        x = x.float()
-        input_dtype = x.dtype
-        
-        B, L, D = x.shape
-        H = self.num_heads
-        E = self.head_dim
-        
-        # 1. Projections
-        qkv = self.qkv(x)
-        q, k, v = qkv.chunk(3, dim=-1)
-        
-        # Reshape (B, L, H, E)
-        q = q.view(B, L, H, E)
-        k = k.view(B, L, H, E)
-        v = v.view(B, L, H, E)
-        
-        # 2. Feature Map (Kernel Trick)
-        q = self.feature_map(q) + 1.0
-        k = self.feature_map(k) + 1.0
-        
-        # Scale Q
-        q = q / math.sqrt(E)
-        
-        # 3. Dynamic Decay (Lambda) - v2.0
-        # lambda_t = sigmoid(decay_net(x_t))
-        # Mapped to range [0.5, 1.0] to prevent total erasure, but allow fast decay
-        decay_logits = self.decay_net(x) # (B, L, H)
-        raw_sigmoid = torch.sigmoid(decay_logits).view(B, L, H, 1)
-        lambdas = 0.9 + (0.1 * raw_sigmoid) # Range [0.9, 1.0] - Safer for gradients
-        
-        # Apply Plasticity
-        lambdas = lambdas * self.plasticity
-        
-        # 4. Parallel Hebbian Update (Log-Space)
-        # Since lambda varies per time step, we cannot use simple powers.
-        # We must use cumulative sum of logs.
-        # log_lambda_cum[t] = sum_{i=0}^t log(lambda_i)
-        
-        log_lambdas = torch.log(lambdas.clamp(min=1e-6)) # (B, L, H, 1)
-        log_lambda_cum = torch.cumsum(log_lambdas, dim=1) # (B, L, H, 1)
-        
-        # Decay factors for Q and K
-        # Q_t gets multiplied by lambda_t...lambda_L (future decay? No, standard form)
-        # Standard parallel form:
-        # O_t = sum_{j<=t} (prod_{k=j+1}^t lambda_k) K_j^T V_j
-        # Log space: log_decay = log_cum[t] - log_cum[j]
-        
-        # To implement efficiently without O(L^2), we use the standard trick:
-        # Multiply K by exp(-log_cum) and Q by exp(log_cum)
-        
-        # CRITICAL FIX: Removed clamp that was distorting temporal distance
-        # The clamp operation broke the model's ability to correctly weigh
-        # information from different time steps, causing garbage output.
-        # Since we use float32 (AMP disabled), exp(-100) = 3.7e-44 is safe.
-        
-        decay_k = torch.exp(-log_lambda_cum)
-        decay_q = torch.exp(log_lambda_cum)
-        
-        k_decayed = k * decay_k
-        q_decayed = q * decay_q
-        
-        # Memory State Accumulation (KV)
-        kv = torch.einsum('blhe,blhf->blhef', k_decayed, v)
-        memory_state = torch.cumsum(kv, dim=1)
-        
-        # Denominator (Z)
-        k_sum_decayed = torch.cumsum(k_decayed, dim=1)
-        
-        # Read Operation
-        # Num: (B, L, H, E) * (B, L, H, E, E) -> (B, L, H, E)
-        num = torch.einsum('blhe,blhef->blhf', q_decayed, memory_state)
-        
-        # Den: (B, L, H, E) * (B, L, H, E) -> (B, L, H)
-        den = torch.einsum('blhe,blhe->blh', q_decayed, k_sum_decayed)
-        den = den.unsqueeze(-1) + 1e-6
-        
-        out = num / den
-        
-        # Final Projection
-        out = out.reshape(B, L, D)
-        out = self.out_proj(out)
-        
-        out = self.dropout(self.norm(out))
-        return out.to(input_dtype)
+def hebbian_memory_apply(params, x, effort: float):
+    B, L, D = x.shape
+    H = params["num_heads"]
+    E = D // H
+    qkv = linear(x, params["W_qkv"], params["b_qkv"])
+    q, k, v = jnp.split(qkv, 3, axis=-1)
+    q = q.reshape(B, L, H, E)
+    k = k.reshape(B, L, H, E)
+    v = v.reshape(B, L, H, E)
+    q = elu(q) + 1.0
+    k = elu(k) + 1.0
+    q = q / jnp.sqrt(E)
+    decay_logits = linear(x, params["W_decay"], params["b_decay"]).reshape(B, L, H, 1)
+    base_lambdas = 0.9 + 0.1 * jax.nn.sigmoid(decay_logits)
+    effort_mod = 1.0 / (effort + 0.1)
+    lambdas = jnp.power(base_lambdas, effort_mod)
+
+    def scan_one_batch(qb, kb, vb, lb):
+        S0 = jnp.zeros((H, E, E))
+        K0 = jnp.zeros((H, E))
+        def step(carry, inp):
+            S, Ksum = carry
+            q_t, k_t, v_t, l_t = inp
+            S = l_t.reshape(H, 1, 1) * S + jnp.einsum('he,hf->hef', k_t, v_t)
+            Ksum = l_t.reshape(H, 1) * Ksum + k_t
+            num = jnp.einsum('he,hef->hf', q_t, S)
+            den = jnp.einsum('he,he->h', q_t, Ksum) + 1e-6
+            out = num / den[:, None]
+            return (S, Ksum), out
+        (_, _), outs = lax.scan(step, (S0, K0), (qb, kb, vb, lb))
+        return outs
+
+    outs = jax.vmap(scan_one_batch, in_axes=(0,0,0,0))(q, k, v, lambdas)
+    out = outs.reshape(B, L, D)
+    out = linear(out, params["W_out"], params["b_out"])
+    out = rmsnorm_apply(out, params["gamma"])
+    return out

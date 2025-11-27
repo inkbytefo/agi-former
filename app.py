@@ -1,77 +1,72 @@
+## Developer: inkbytefo
+## Modified: 2025-11-27
+
 import gradio as gr
-import torch
-import torch.nn.functional as F
-from src.models.agiformer import AGIFORMER
+import jax
 import os
+from jax import random
+from src.models.agiformer import agiformer_init
+from src.data.morphology import build_vocab
+from src.inference import generate_words, invert_vocab
 
-# Load Model (v2.0 Scaled Configuration)
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-model = AGIFORMER(
-    d_model=768, 
-    n_layers=12, 
-    num_heads=12, 
-    patch_size=4, 
-    window_size=256, 
-    thinking_steps=3
-).to(DEVICE)
-
-MODEL_PATH = "best_model_scaled.pth"
-if os.path.exists(MODEL_PATH):
-    print(f"Loading model from {MODEL_PATH}...")
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-    model.eval()
+print("⏳ Sözlük oluşturuluyor...")
+sample_path = os.path.join("data", "sample.txt")
+if not os.path.exists(sample_path):
+    texts = ["Merhaba dünya", "Yapay zeka", "Türkiye Cumhuriyeti"]
 else:
-    print("Warning: Checkpoint not found. Using random weights.")
+    with open(sample_path, "r", encoding="utf-8") as f:
+        texts = [line.strip() for line in f if line.strip()]
 
-def sample(logits, temperature):
-    if temperature < 1e-5:
-        return torch.argmax(logits, dim=-1)
-    else:
-        probs = F.softmax(logits / temperature, dim=-1)
-        return torch.multinomial(probs, 1).squeeze(-1)
+root2id, suffix2id = build_vocab(texts, root_limit=10000, suffix_limit=500)
+id2root = invert_vocab(root2id)
+id2suffix = invert_vocab(suffix2id)
+SUFFIX_SLOTS = 5
 
-def generate(prompt, temp, max_new_tokens=200):
-    input_bytes = list(prompt.encode('utf-8'))
-    pad = (4 - len(input_bytes) % 4) % 4
-    input_bytes.extend([32]*pad)
-    
-    generated = input_bytes[:]
-    
-    with torch.no_grad():
-        # Generate patch by patch (4 bytes at a time)
-        for _ in range(max_new_tokens // 4):
-            ctx = generated[-1024:] # Sliding window context
-            x = torch.tensor(ctx, dtype=torch.long).unsqueeze(0).to(DEVICE)
-            
-            # v2.0 returns logits: (B, N, 4, 256)
-            logits = model(x)
-            
-            # Get last patch logits: (4, 256)
-            last_patch_logits = logits[0, -1, :, :]
-            
-            # Sample
-            new_bytes = sample(last_patch_logits, temp).tolist()
-            generated.extend(new_bytes)
-            
-            # Stream output
-            curr_text = bytes(generated).decode('utf-8', errors='replace')
-            yield curr_text
+print(f"✅ Sözlük Hazır: {len(root2id)} kök, {len(suffix2id)} ek.")
+
+print("🧠 Model başlatılıyor...")
+key = random.PRNGKey(42)
+model_params = agiformer_init(
+    d_model=128,
+    n_layers=4,
+    num_heads=4,
+    patch_size=4,
+    window_size=64,
+    thinking_steps=3,
+    key=key,
+)
+
+def generate_response(prompt, effort, temp_root, temp_suffix):
+    try:
+        output = generate_words(
+            params=model_params,
+            prompt_text=prompt,
+            root2id=root2id,
+            suffix2id=suffix2id,
+            id2root=id2root,
+            id2suffix=id2suffix,
+            suffix_slots=SUFFIX_SLOTS,
+            num_words=15,
+            effort=effort,
+            temperature_root=temp_root,
+            temperature_suffix=temp_suffix,
+            seed=random.randint(key, (1,), 0, 10000).item(),
+        )
+        return output
+    except Exception as e:
+        return f"Hata: {str(e)}"
 
 demo = gr.Interface(
-    fn=generate,
+    fn=generate_response,
     inputs=[
-        gr.Textbox(label="Başlangıç Metni", placeholder="Bir zamanlar..."), 
-        gr.Slider(0.0, 1.5, value=0.7, label="Yaratıcılık (Temperature)"),
-        gr.Slider(50, 500, value=200, step=10, label="Maksimum Uzunluk")
+        gr.Textbox(label="Başlangıç (Prompt)", value="Türkiye"),
+        gr.Slider(0.1, 1.0, value=0.6, label="Düşünme Eforu (Effort)"),
+        gr.Slider(0.1, 2.0, value=0.8, label="Kök Çeşitliliği (Temp Root)"),
+        gr.Slider(0.1, 2.0, value=0.5, label="Ek Tutarlılığı (Temp Suffix)"),
     ],
-    outputs=gr.Textbox(label="AGIFORMER v2.0"),
-    title="AGIFORMER v2.0: Byte-Level Turkish AI",
-    description="Token kullanmayan, düşünen yapay zeka. (v2.0 Scaled Architecture)",
-    examples=[
-        ["Türkiye Cumhuriyeti ", 0.7, 200],
-        ["Yapay zeka nedir? ", 0.5, 150],
-        ["İstanbul'un tarihi ", 0.8, 300]
-    ]
+    outputs=gr.Textbox(label="Morpho-AGI Çıktısı"),
+    title="AGIFORMER v3.0: Morpho-Semantic Turkish AI",
+    description="Kök ve Ekleri ayrı ayrı işleyen, Türkçe morfolojisine özelleşmiş AGI mimarisi.",
 )
 
 if __name__ == "__main__":
