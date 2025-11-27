@@ -8,3 +8,4 @@ jpype1
 optax
 stanza
 tqdm
+psutil

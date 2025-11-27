@@ -8,7 +8,7 @@ PAD_ID = -1
 
 def _masked_ce(logits, targets):
     mask = (targets >= 0).astype(jnp.float32)
-    logp = jax.nn.log_softmax(logits, axis=-1)
+    logp = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
     safe_targets = jnp.where(targets >= 0, targets, 0)
     gather = jnp.take_along_axis(logp, safe_targets[..., None], axis=-1).squeeze(-1)
     loss = -(mask * gather)
@@ -34,4 +34,3 @@ def byte_loss(outputs, targets):
     safe_targets = jnp.clip(targets, 0, V - 1)
     gather = jnp.take_along_axis(logp, safe_targets[..., None], axis=-1).squeeze(-1)
     return -jnp.mean(gather)
-

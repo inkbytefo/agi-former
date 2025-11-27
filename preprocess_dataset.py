@@ -6,6 +6,7 @@ import json
 import argparse
 import numpy as np
 from tqdm import tqdm
+import numpy as np
 
 from src.data.stanza_wrapper import StanzaAnalyzer
 from src.data.morphology import build_vocab, encode_text, PAD_ID
@@ -17,6 +18,7 @@ def main():
     p.add_argument("--vocab_size", type=int, default=50000)
     p.add_argument("--suffix_vocab_size", type=int, default=1000)
     p.add_argument("--suffix_slots", type=int, default=5)
+    p.add_argument("--val_split", type=float, default=0.1)
     args = p.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -47,7 +49,12 @@ def main():
         for j, tok in enumerate(seq):
             data[i, j, :] = np.array(tok, dtype=np.int32)
 
-    np.save(os.path.join(args.output_dir, "dataset.npy"), data)
+    idx = np.random.permutation(N)
+    split = int(N * (1.0 - args.val_split))
+    train_idx = idx[:split]
+    val_idx = idx[split:]
+    np.save(os.path.join(args.output_dir, "train.npy"), data[train_idx])
+    np.save(os.path.join(args.output_dir, "val.npy"), data[val_idx])
 
     vocab = {"root2id": root2id, "suffix2id": suffix2id, "suffix_slots": args.suffix_slots}
     with open(os.path.join(args.output_dir, "vocab.json"), "w", encoding="utf-8") as f:
@@ -55,4 +62,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
