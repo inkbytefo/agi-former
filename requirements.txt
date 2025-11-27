@@ -9,3 +9,4 @@ optax
 stanza
 tqdm
 psutil
+wandb

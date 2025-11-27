@@ -79,7 +79,7 @@ def _make_train_step(static_params, tx, mp_dtype, use_remat):
         return tp2, opt_state2, val
     return jax.jit(_train_step)
 
-def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1e-3, seed=0, key=None, weight_decay=1e-4, warmup_steps=100, decay_steps=1000, clip_norm=1.0, val_iterator=None, return_metrics=False, mp_dtype=None, use_remat=False):
+def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1e-3, seed=0, key=None, weight_decay=1e-4, warmup_steps=100, decay_steps=1000, clip_norm=1.0, val_iterator=None, return_metrics=False, mp_dtype=None, use_remat=False, log_callback=None):
     key = random.PRNGKey(seed) if key is None else key
     params = agiformer_init(d_model=256, n_layers=2, num_heads=4, patch_size=4, window_size=64, thinking_steps=3, key=key)
     schedule = optax.warmup_cosine_decay_schedule(init_value=0.0, peak_value=lr, warmup_steps=warmup_steps, decay_steps=decay_steps, end_value=0.0)
@@ -94,10 +94,11 @@ def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1
     for epoch in range(epochs):
         eff = curriculum_effort(epoch)
         train_losses = []
-        it_len = len(data_iterator) if hasattr(data_iterator, "__len__") else None
+        epoch_iter = data_iterator() if callable(data_iterator) else data_iterator
+        it_len = len(epoch_iter) if hasattr(epoch_iter, "__len__") else None
         pbar = tqdm(total=it_len, desc=f"Epoch {epoch+1}/{epochs}")
         first_step = True
-        for batch in data_iterator:
+        for batch in epoch_iter:
             batch = jnp.array(batch)
             batch = apply_curriculum_to_batch(batch, epoch)
             if eff is None:
@@ -122,5 +123,10 @@ def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1
                 vs.append(float(v))
             val_loss = float(jnp.mean(jnp.array(vs))) if vs else None
         metrics.append({"epoch": epoch, "train_loss": float(jnp.mean(jnp.array(train_losses))) if train_losses else None, "val_loss": val_loss})
+        if log_callback is not None:
+            try:
+                log_callback(metrics[-1])
+            except Exception:
+                pass
     params = _merge_params(train_params, static_params)
     return (params, metrics) if return_metrics else params
