@@ -1,12 +1,12 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-27
+## Modified: 2025-11-28
 
 import jax
 import jax.numpy as jnp
 from jax import random, lax
 
 def reasoning_init(d_model, key: random.PRNGKey):
-    k1, k2, k3, k4 = random.split(key, 4)
+    k1, k2, k3, k4, k5 = random.split(key, 5)
     W1 = random.normal(k1, (d_model, 4 * d_model)) * (1.0 / jnp.sqrt(d_model))
     b1 = jnp.zeros((4 * d_model,))
     W2 = random.normal(k2, (4 * d_model, d_model)) * (1.0 / jnp.sqrt(4 * d_model))
@@ -17,7 +17,9 @@ def reasoning_init(d_model, key: random.PRNGKey):
     b_gate = jnp.zeros((d_model,))
     W_halt = random.normal(k4, (d_model, 1)) * (1.0 / jnp.sqrt(d_model))
     b_halt = jnp.zeros((1,))
-    return {"W1": W1, "b1": b1, "W2": W2, "b2": b2, "norm_gamma": norm_gamma, "norm_beta": norm_beta, "W_gate": W_gate, "b_gate": b_gate, "W_halt": W_halt, "b_halt": b_halt}
+    W_forget = random.normal(k5, (d_model, d_model)) * (1.0 / jnp.sqrt(d_model))
+    b_forget = jnp.zeros((d_model,))
+    return {"W1": W1, "b1": b1, "W2": W2, "b2": b2, "norm_gamma": norm_gamma, "norm_beta": norm_beta, "W_gate": W_gate, "b_gate": b_gate, "W_halt": W_halt, "b_halt": b_halt, "W_forget": W_forget, "b_forget": b_forget}
 
 def layer_norm(x, gamma, beta):
     mean = jnp.mean(x, axis=-1, keepdims=True)
@@ -32,12 +34,14 @@ def reasoning_apply(params, x, thinking_steps: int, effort: float):
         normed = layer_norm(state, params["norm_gamma"], params["norm_beta"])
         h = jax.nn.gelu(jnp.einsum('bld,df->blf', normed, params["W1"]) + params["b1"])
         update = jnp.einsum('blf,fd->bld', h, params["W2"]) + params["b2"]
-        g = jax.nn.sigmoid(jnp.einsum('bld,df->blf', normed, params["W_gate"]) + params["b_gate"])
+        z = jax.nn.sigmoid(jnp.einsum('bld,df->blf', normed, params["W_gate"]) + params["b_gate"]) 
+        f = jax.nn.sigmoid(jnp.einsum('bld,df->blf', normed, params["W_forget"]) + params["b_forget"]) 
         halt_bias = (1.0 - effort) * 5.0
         p_halt = jax.nn.sigmoid(jnp.einsum('bld,df->blf', normed, params["W_halt"]) + params["b_halt"] + halt_bias).squeeze(-1)
         active_scale = (step_idx < effective_steps).astype(jnp.float32)
-        update_scale = (1.0 - p_halt)[..., None] * active_scale[..., None]
-        state = state + update_scale * g * update
+        m = (1.0 - p_halt)[..., None] * active_scale[..., None]
+        candidate = f * state + z * update
+        state = m * candidate + (1.0 - m) * state
         return state, None
     state, _ = lax.scan(one_step, x, jnp.arange(thinking_steps, dtype=jnp.int32))
     return state
