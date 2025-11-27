@@ -8,9 +8,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 import sys
-
-# Add project root to PYTHONPATH when running as a script
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from src.inference import load_model
 from src.training.train_loop import total_loss
