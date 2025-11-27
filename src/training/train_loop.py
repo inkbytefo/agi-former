@@ -1,10 +1,11 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-27
+## Modified: 2025-11-28
 
 import jax
 import jax.numpy as jnp
 from jax import random
 import optax
+from tqdm import tqdm
 
 from src.models.agiformer import agiformer_init, agiformer_apply
 import jax
@@ -67,6 +68,17 @@ def _merge_params(train, static):
     else:
         return train if train is not None else static
 
+def _make_train_step(static_params, tx, mp_dtype, use_remat):
+    def _train_step(train_params, opt_state, batch, eff):
+        def loss_fn(tp):
+            full = _merge_params(tp, static_params)
+            return total_loss(full, batch, epoch=0, lambda_root=1.0, lambda_suffix=0.5, effort=eff, mp_dtype=mp_dtype, use_remat=use_remat)
+        val, grads = jax.value_and_grad(loss_fn)(train_params)
+        updates, opt_state2 = tx.update(grads, opt_state, train_params)
+        tp2 = optax.apply_updates(train_params, updates)
+        return tp2, opt_state2, val
+    return jax.jit(_train_step)
+
 def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1e-3, seed=0, key=None, weight_decay=1e-4, warmup_steps=100, decay_steps=1000, clip_norm=1.0, val_iterator=None, return_metrics=False, mp_dtype=None, use_remat=False):
     key = random.PRNGKey(seed) if key is None else key
     params = agiformer_init(d_model=256, n_layers=2, num_heads=4, patch_size=4, window_size=64, thinking_steps=3, key=key)
@@ -77,22 +89,29 @@ def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1
     )
     train_params, static_params = _split_params(params)
     opt_state = tx.init(train_params)
+    train_step = _make_train_step(static_params, tx, mp_dtype, use_remat)
     metrics = []
     for epoch in range(epochs):
         eff = curriculum_effort(epoch)
         train_losses = []
+        it_len = len(data_iterator) if hasattr(data_iterator, "__len__") else None
+        pbar = tqdm(total=it_len, desc=f"Epoch {epoch+1}/{epochs}")
+        first_step = True
         for batch in data_iterator:
             batch = jnp.array(batch)
             batch = apply_curriculum_to_batch(batch, epoch)
             if eff is None:
                 eff = random.uniform(random.fold_in(key, epoch), minval=0.2, maxval=1.0)
-            def loss_fn_train(tp):
-                full = _merge_params(tp, static_params)
-                return total_loss(full, batch, epoch, lambda_root=1.0, lambda_suffix=0.5, effort=eff, mp_dtype=mp_dtype, use_remat=use_remat)
-            val, grads = jax.value_and_grad(loss_fn_train)(train_params)
+            eff_val = jnp.asarray(eff, dtype=jnp.float32)
+            if first_step:
+                pbar.set_postfix_str("JIT Derleniyor...")
+            train_params, opt_state, val = train_step(train_params, opt_state, batch, eff_val)
+            if first_step:
+                pbar.set_postfix_str("Eğitim")
+                first_step = False
             train_losses.append(float(val))
-            updates, opt_state = tx.update(grads, opt_state, train_params)
-            train_params = optax.apply_updates(train_params, updates)
+            pbar.update(1)
+        pbar.close()
         val_loss = None
         if val_iterator is not None:
             vs = []

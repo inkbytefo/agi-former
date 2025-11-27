@@ -1,5 +1,5 @@
 ## Developer: inkbytefo
-## Modified: 2025-11-27
+## Modified: 2025-11-28
 
 import os
 import argparse
@@ -7,6 +7,10 @@ import json
 import numpy as np
 import jax
 import jax.numpy as jnp
+import sys
+
+# Add project root to PYTHONPATH when running as a script
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from src.inference import load_model
 from src.training.train_loop import total_loss
@@ -44,4 +48,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
