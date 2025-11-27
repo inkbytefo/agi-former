@@ -79,9 +79,20 @@ def _make_train_step(static_params, tx, mp_dtype, use_remat):
         return tp2, opt_state2, val
     return jax.jit(_train_step)
 
-def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1e-3, seed=0, key=None, weight_decay=1e-4, warmup_steps=100, decay_steps=1000, clip_norm=1.0, val_iterator=None, return_metrics=False, mp_dtype=None, use_remat=False, log_callback=None):
+def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1e-3, seed=0, key=None, weight_decay=1e-4, warmup_steps=100, decay_steps=1000, clip_norm=1.0, val_iterator=None, return_metrics=False, mp_dtype=None, use_remat=False, log_callback=None, model_config=None):
     key = random.PRNGKey(seed) if key is None else key
-    params = agiformer_init(d_model=256, n_layers=2, num_heads=4, patch_size=4, window_size=64, thinking_steps=3, key=key)
+    if model_config is None:
+        model_config = {}
+    
+    # Ensure vocab sizes are in config if not provided
+    if "root_vocab_size" not in model_config:
+        model_config["root_vocab_size"] = len(root2id)
+    if "suffix_vocab_size" not in model_config:
+        model_config["suffix_vocab_size"] = len(suffix2id)
+    if "suffix_slots" not in model_config:
+        model_config["suffix_slots"] = suffix_slots
+
+    params = agiformer_init(key=key, **model_config)
     schedule = optax.warmup_cosine_decay_schedule(init_value=0.0, peak_value=lr, warmup_steps=warmup_steps, decay_steps=decay_steps, end_value=0.0)
     tx = optax.chain(
         optax.clip_by_global_norm(clip_norm),

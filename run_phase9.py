@@ -87,11 +87,18 @@ def main():
     p.add_argument("--config", type=str, default="20220301.tr")
     p.add_argument("--split", type=str, default="train")
     p.add_argument("--vocab_samples", type=int, default=50000)
-    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--steps_per_epoch", type=int, default=1000)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--suffix_slots", type=int, default=5)
     p.add_argument("--max_seq_len", type=int, default=256)
+    p.add_argument("--d_model", type=int, default=512)
+    p.add_argument("--n_layers", type=int, default=6)
+    p.add_argument("--num_heads", type=int, default=8)
+    p.add_argument("--patch_size", type=int, default=4)
+    p.add_argument("--window_size", type=int, default=128)
+    p.add_argument("--thinking_steps", type=int, default=3)
+    
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--warmup_steps", type=int, default=1000)
     p.add_argument("--decay_steps", type=int, default=10000)
@@ -103,7 +110,7 @@ def main():
 
     try:
         import wandb
-        wandb.init(project=args.project, mode=args.wandb_mode)
+        wandb.init(project=args.project, mode=args.wandb_mode, config=vars(args))
     except Exception:
         wandb = None
 
@@ -122,6 +129,18 @@ def main():
     if args.precision.lower() == "bf16":
         mp_dtype = jnp.bfloat16
 
+    model_config = {
+        "d_model": args.d_model,
+        "n_layers": args.n_layers,
+        "num_heads": args.num_heads,
+        "patch_size": args.patch_size,
+        "window_size": args.window_size,
+        "thinking_steps": args.thinking_steps,
+        "root_vocab_size": len(root2id),
+        "suffix_vocab_size": len(suffix2id),
+        "suffix_slots": args.suffix_slots,
+    }
+
     params, metrics = train_epochs(
         epoch_iter_factory,
         root2id,
@@ -139,6 +158,7 @@ def main():
         mp_dtype=mp_dtype,
         use_remat=True,
         log_callback=log_cb,
+        model_config=model_config,
     )
 
     if wandb is not None:

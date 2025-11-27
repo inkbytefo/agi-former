@@ -58,17 +58,19 @@ def morph_head_apply(params, latents):
     suffix_logits = jnp.stack([one_slot(s) for s in range(S)], axis=2)  # (B, N, S, Vsuffix)
     return {"root": root_logits, "suffix": suffix_logits}
 
-def agiformer_init(d_model=512, n_layers=6, num_heads=8, patch_size=4, window_size=128, thinking_steps=3, key: random.PRNGKey = random.PRNGKey(0)):
+def agiformer_init(d_model=512, n_layers=6, num_heads=8, patch_size=4, window_size=128, thinking_steps=3, root_vocab_size=50000, suffix_vocab_size=1000, suffix_slots=5, key: random.PRNGKey = random.PRNGKey(0)):
     enc = encoder_init(d_model, patch_size, random.fold_in(key, 1))
+    # Override vocab sizes in encoder if needed, or just use the passed args for heads
+    enc["root_vocab_size"] = root_vocab_size
+    enc["suffix_vocab_size"] = suffix_vocab_size
+    
     layers = [hybrid_block_init(d_model, num_heads, window_size, random.fold_in(key, 100 + i)) for i in range(n_layers)]
     norm_gamma = jnp.ones((d_model,))
     norm_beta = jnp.zeros((d_model,))
     reason = reasoning_init(d_model, random.fold_in(key, 999))
     byte_head = byte_head_init(d_model, patch_size, random.fold_in(key, 1000))
-    root_vocab = enc["root_vocab_size"]
-    suffix_vocab = enc["suffix_vocab_size"]
-    suffix_slots = 5
-    morph_head = morph_head_init(d_model, root_vocab, suffix_vocab, suffix_slots, random.fold_in(key, 1001))
+    
+    morph_head = morph_head_init(d_model, root_vocab_size, suffix_vocab_size, suffix_slots, random.fold_in(key, 1001))
     return {
         "encoder": enc, "layers": layers, "norm_gamma": norm_gamma, "norm_beta": norm_beta,
         "reason": reason, "byte_head": byte_head, "morph_head": morph_head,
