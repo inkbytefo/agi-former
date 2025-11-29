@@ -49,7 +49,7 @@ def sample_next_word(outs: Dict[str, jnp.ndarray], key: Any, suffix_slots: int, 
         sids.append(PAD_ID)
     return rid, sids
 
-def generate_words(params: Dict, prompt_text: str, root2id: Dict[str, int], suffix2id: Dict[str, int], id2root: Dict[int, str], id2suffix: Dict[int, str], suffix_slots: int, num_words: int = 5, effort: float = 0.6, temperature_root: float = 1.0, temperature_suffix: float = 1.0, top_k_root: Optional[int] = None, top_k_suffix: Optional[int] = None, seed: int = 0):
+def generate_words(params: Dict, prompt_text: str, root2id: Dict[str, int], suffix2id: Dict[str, int], id2root: Dict[int, str], id2suffix: Dict[int, str], suffix_slots: int, num_words: int = 5, effort: float = 0.6, temperature_root: float = 1.0, temperature_suffix: float = 1.0, top_k_root: Optional[int] = None, top_k_suffix: Optional[int] = None, seed: int = 0, enable_hypercognitive: bool = False):
     from src.data.morphology import encode_text
     from src.models.agiformer import agiformer_apply
     seq = encode_text(prompt_text, root2id, suffix2id, suffix_slots)
@@ -57,7 +57,7 @@ def generate_words(params: Dict, prompt_text: str, root2id: Dict[str, int], suff
     key = jax.random.PRNGKey(seed)
     outputs = []
     for _ in range(num_words):
-        outs = agiformer_apply(params, ctx, effort=effort)
+        outs, _ = agiformer_apply(params, ctx, effort=effort, train=False)  # Ignore ortho_loss during inference
         key, sk = jax.random.split(key)
         rid, sids = sample_next_word(outs, sk, suffix_slots, temperature_root, temperature_suffix, top_k_root, top_k_suffix)
         word = detokenize_word(rid, sids, id2root, id2suffix)

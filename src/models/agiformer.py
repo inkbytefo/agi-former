@@ -7,6 +7,7 @@ from jax import random
 from .encoder import encoder_init, encoder_apply
 from .layers import hybrid_block_init, hybrid_block_apply
 from .reasoning import reasoning_init, reasoning_apply
+from .hypercognitive import hypercognitive_init, hypercognitive_apply
 
 def byte_head_init(d_model, patch_size, key: random.PRNGKey):
     k1, k2, k3 = random.split(key, 3)
@@ -58,23 +59,29 @@ def morph_head_apply(params, latents):
     suffix_logits = jnp.stack([one_slot(s) for s in range(S)], axis=2)  # (B, N, S, Vsuffix)
     return {"root": root_logits, "suffix": suffix_logits}
 
-def agiformer_init(d_model=512, n_layers=6, num_heads=8, patch_size=4, window_size=128, thinking_steps=3, root_vocab_size=50000, suffix_vocab_size=1000, suffix_slots=5, key: random.PRNGKey = random.PRNGKey(0)):
+def agiformer_init(d_model=512, n_layers=6, num_heads=8, patch_size=4, window_size=128, thinking_steps=3, root_vocab_size=50000, suffix_vocab_size=1000, suffix_slots=5, enable_hypercognitive=False, num_branches=4, key: random.PRNGKey = random.PRNGKey(0)):
     enc = encoder_init(d_model, patch_size, random.fold_in(key, 1))
     # Override vocab sizes in encoder if needed, or just use the passed args for heads
     enc["root_vocab_size"] = root_vocab_size
     enc["suffix_vocab_size"] = suffix_vocab_size
-    
+
     layers = [hybrid_block_init(d_model, num_heads, window_size, random.fold_in(key, 100 + i)) for i in range(n_layers)]
     norm_gamma = jnp.ones((d_model,))
     norm_beta = jnp.zeros((d_model,))
     reason = reasoning_init(d_model, random.fold_in(key, 999))
+
+    # HyperCognitive integration
+    hypercognitive = None
+    if enable_hypercognitive:
+        hypercognitive = hypercognitive_init(d_model, num_branches, thinking_steps * 2, random.fold_in(key, 2000))
+
     byte_head = byte_head_init(d_model, patch_size, random.fold_in(key, 1000))
-    
+
     morph_head = morph_head_init(d_model, root_vocab_size, suffix_vocab_size, suffix_slots, random.fold_in(key, 1001))
     return {
         "encoder": enc, "layers": layers, "norm_gamma": norm_gamma, "norm_beta": norm_beta,
-        "reason": reason, "byte_head": byte_head, "morph_head": morph_head,
-        "thinking_steps": thinking_steps, "suffix_slots": suffix_slots
+        "reason": reason, "hypercognitive": hypercognitive, "byte_head": byte_head, "morph_head": morph_head,
+        "thinking_steps": thinking_steps, "suffix_slots": suffix_slots, "enable_hypercognitive": enable_hypercognitive, "num_branches": num_branches
     }
 
 def layer_norm(x, gamma, beta):
@@ -83,17 +90,26 @@ def layer_norm(x, gamma, beta):
     xhat = (x - mean) / jnp.sqrt(var + 1e-5)
     return gamma * xhat + beta
 
-def agiformer_apply(params, x, effort: float = 1.0):
+def agiformer_apply(params, x, effort: float = 1.0, train: bool = True) -> Tuple[Any, float]:
     raw_ndim = x.ndim
     x = encoder_apply(params["encoder"], x)
     for layer in params["layers"]:
         x = hybrid_block_apply(layer, x, effort)
-    x = layer_norm(x, params["norm_gamma"], params["norm_beta"]) 
-    x = reasoning_apply(params["reason"], x, params["thinking_steps"], effort) 
-    if raw_ndim == 2:
-        return byte_head_apply(params["byte_head"], x)
+    x = layer_norm(x, params["norm_gamma"], params["norm_beta"])
+
+    ortho_loss = 0.0  # Default no loss
+    # Reasoning: Use HyperCognitive if enabled, else basic reasoning
+    if params["enable_hypercognitive"] and params["hypercognitive"] is not None:
+        x, ortho_loss = hypercognitive_apply(params["hypercognitive"], x, effort, train)
     else:
-        return morph_head_apply(params["morph_head"], x)
+        x = reasoning_apply(params["reason"], x, params["thinking_steps"], effort)
+
+    if raw_ndim == 2:
+        output = byte_head_apply(params["byte_head"], x)
+    else:
+        output = morph_head_apply(params["morph_head"], x)
+
+    return output, ortho_loss
 
 class AGIFORMER:
     def __init__(
@@ -104,12 +120,19 @@ class AGIFORMER:
         patch_size: int = 4,
         window_size: int = 128,
         thinking_steps: int = 3,
+        enable_hypercognitive: bool = False,
+        num_branches: int = 4,
         key: random.PRNGKey = random.PRNGKey(0)
     ):
-        self.params = agiformer_init(d_model, n_layers, num_heads, patch_size, window_size, thinking_steps, key)
+        self.params = agiformer_init(d_model, n_layers, num_heads, patch_size, window_size, thinking_steps,
+                                   enable_hypercognitive=enable_hypercognitive, num_branches=num_branches, key=key)
 
-    def forward(self, x):
-        return agiformer_apply(self.params, x)
+    def forward(self, x, effort: float = 1.0, train: bool = True):
+        output, ortho_loss = agiformer_apply(self.params, x, effort, train)
+        # For backward compatibility, return just output unless train flag indicates otherwise
+        if train and self.params["enable_hypercognitive"]:
+            return output, ortho_loss
+        return output
 
     def to(self, device):
         return self
