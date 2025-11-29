@@ -8,6 +8,7 @@ from .encoder import encoder_init, encoder_apply
 from .layers import hybrid_block_init, hybrid_block_apply
 from .reasoning import reasoning_init, reasoning_apply
 from .hypercognitive import hypercognitive_init, hypercognitive_apply
+from .strange_attractor import strange_attractor_init, strange_attractor_apply
 
 def byte_head_init(d_model, patch_size, key: random.PRNGKey):
     k1, k2, k3 = random.split(key, 3)
@@ -59,7 +60,7 @@ def morph_head_apply(params, latents):
     suffix_logits = jnp.stack([one_slot(s) for s in range(S)], axis=2)  # (B, N, S, Vsuffix)
     return {"root": root_logits, "suffix": suffix_logits}
 
-def agiformer_init(d_model=512, n_layers=6, num_heads=8, patch_size=4, window_size=128, thinking_steps=3, root_vocab_size=50000, suffix_vocab_size=1000, suffix_slots=5, enable_hypercognitive=False, num_branches=4, key: random.PRNGKey = random.PRNGKey(0)):
+def agiformer_init(d_model=512, n_layers=6, num_heads=8, patch_size=4, window_size=128, thinking_steps=3, root_vocab_size=50000, suffix_vocab_size=1000, suffix_slots=5, enable_hypercognitive=False, num_branches=4, enable_strange_attractor=False, attractor_steps=8, key: random.PRNGKey = random.PRNGKey(0)):
     enc = encoder_init(d_model, patch_size, random.fold_in(key, 1))
     # Override vocab sizes in encoder if needed, or just use the passed args for heads
     enc["root_vocab_size"] = root_vocab_size
@@ -97,19 +98,25 @@ def agiformer_apply(params, x, effort: float = 1.0, train: bool = True) -> Tuple
         x = hybrid_block_apply(layer, x, effort)
     x = layer_norm(x, params["norm_gamma"], params["norm_beta"])
 
-    ortho_loss = 0.0  # Default no loss
+    loss = 0.0  # Default no loss
     # Reasoning: Use HyperCognitive if enabled, else basic reasoning
     if params["enable_hypercognitive"] and params["hypercognitive"] is not None:
         x, ortho_loss = hypercognitive_apply(params["hypercognitive"], x, effort, train)
+        loss += ortho_loss
     else:
         x = reasoning_apply(params["reason"], x, params["thinking_steps"], effort)
+
+    # Strange Attractor: Bilinç döngüsü ve kaos kenarı dengesi
+    if params.get("enable_strange_attractor", False) and params["strange_attractor"] is not None:
+        x, stability_loss = strange_attractor_apply(params["strange_attractor"], x, train)
+        loss += 0.05 * stability_loss  # lambda_stability = 0.05
 
     if raw_ndim == 2:
         output = byte_head_apply(params["byte_head"], x)
     else:
         output = morph_head_apply(params["morph_head"], x)
 
-    return output, ortho_loss
+    return output, loss
 
 class AGIFORMER:
     def __init__(
@@ -122,10 +129,13 @@ class AGIFORMER:
         thinking_steps: int = 3,
         enable_hypercognitive: bool = False,
         num_branches: int = 4,
+        enable_strange_attractor: bool = False,
+        attractor_steps: int = 8,
         key: random.PRNGKey = random.PRNGKey(0)
     ):
         self.params = agiformer_init(d_model, n_layers, num_heads, patch_size, window_size, thinking_steps,
-                                   enable_hypercognitive=enable_hypercognitive, num_branches=num_branches, key=key)
+                                   enable_hypercognitive=enable_hypercognitive, num_branches=num_branches,
+                                   enable_strange_attractor=enable_strange_attractor, attractor_steps=attractor_steps, key=key)
 
     def forward(self, x, effort: float = 1.0, train: bool = True):
         output, ortho_loss = agiformer_apply(self.params, x, effort, train)

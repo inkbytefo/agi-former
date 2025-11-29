@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from src.models.agiformer import agiformer_init, agiformer_apply
 import jax
-from .loss import morph_loss, byte_loss, PAD_ID
+from .loss import morph_loss, byte_loss, PAD_ID, kolmogorov_complexity_loss
 
 def curriculum_effort(epoch):
     if epoch < 5:
@@ -27,117 +27,23 @@ def apply_curriculum_to_batch(batch, epoch):
 
 def total_loss(params, batch, epoch, lambda_root=1.0, lambda_suffix=0.5, effort=1.0, mp_dtype=None, use_remat=False):
     apply_fn = jax.checkpoint(agiformer_apply) if use_remat else agiformer_apply
-    outs = apply_fn(params, batch, effort=effort)
+    outs, ortho_loss = apply_fn(params, batch, effort=effort)
     if isinstance(outs, dict):
         if mp_dtype is not None:
             outs = {
                 "root": outs["root"].astype(mp_dtype),
                 "suffix": outs["suffix"].astype(mp_dtype),
             }
-        return morph_loss(outs, batch, lambda_root=lambda_root, lambda_suffix=lambda_suffix)
+        main_loss = morph_loss(outs, batch, lambda_root=lambda_root, lambda_suffix=lambda_suffix)
     else:
         targets = jnp.zeros_like(outs, dtype=jnp.int32)
-        return byte_loss(outs, targets)
-
-def _is_trainable_leaf(x):
-    return isinstance(x, jnp.ndarray) and jnp.issubdtype(x.dtype, jnp.inexact)
-
-def _split_params(params):
-    if isinstance(params, dict):
-        train = {}
-        static = {}
-        for k, v in params.items():
-            t, s = _split_params(v)
-            if t is not None:
-                train[k] = t
-            static[k] = s
-        return train, static
-    elif _is_trainable_leaf(params):
-        return params, None
-    else:
-        return None, params
-
-def _merge_params(train, static):
-    if isinstance(static, dict):
-        out = {}
-        for k in static.keys() | (train.keys() if isinstance(train, dict) else set()):
-            tv = train.get(k) if isinstance(train, dict) else None
-            sv = static.get(k)
-            out[k] = _merge_params(tv, sv)
-        return out
-    else:
-        return train if train is not None else static
-
-def _make_train_step(static_params, tx, mp_dtype, use_remat):
-    def _train_step(train_params, opt_state, batch, eff):
-        def loss_fn(tp):
-            full = _merge_params(tp, static_params)
-            return total_loss(full, batch, epoch=0, lambda_root=1.0, lambda_suffix=0.5, effort=eff, mp_dtype=mp_dtype, use_remat=use_remat)
-        val, grads = jax.value_and_grad(loss_fn)(train_params)
-        updates, opt_state2 = tx.update(grads, opt_state, train_params)
-        tp2 = optax.apply_updates(train_params, updates)
-        return tp2, opt_state2, val
-    return jax.jit(_train_step)
-
-def train_epochs(data_iterator, root2id, suffix2id, suffix_slots, epochs=3, lr=1e-3, seed=0, key=None, weight_decay=1e-4, warmup_steps=100, decay_steps=1000, clip_norm=1.0, val_iterator=None, return_metrics=False, mp_dtype=None, use_remat=False, log_callback=None, model_config=None):
-    key = random.PRNGKey(seed) if key is None else key
-    if model_config is None:
-        model_config = {}
+        main_loss = byte_loss(outs, batch)
     
-    # Ensure vocab sizes are in config if not provided
-    if "root_vocab_size" not in model_config:
-        model_config["root_vocab_size"] = len(root2id)
-    if "suffix_vocab_size" not in model_config:
-        model_config["suffix_vocab_size"] = len(suffix2id)
-    if "suffix_slots" not in model_config:
-        model_config["suffix_slots"] = suffix_slots
-
-    params = agiformer_init(key=key, **model_config)
-    schedule = optax.warmup_cosine_decay_schedule(init_value=0.0, peak_value=lr, warmup_steps=warmup_steps, decay_steps=decay_steps, end_value=0.0)
-    tx = optax.chain(
-        optax.clip_by_global_norm(clip_norm),
-        optax.adamw(learning_rate=schedule, weight_decay=weight_decay),
-    )
-    train_params, static_params = _split_params(params)
-    opt_state = tx.init(train_params)
-    train_step = _make_train_step(static_params, tx, mp_dtype, use_remat)
-    metrics = []
-    for epoch in range(epochs):
-        eff = curriculum_effort(epoch)
-        train_losses = []
-        epoch_iter = data_iterator() if callable(data_iterator) else data_iterator
-        it_len = len(epoch_iter) if hasattr(epoch_iter, "__len__") else None
-        pbar = tqdm(total=it_len, desc=f"Epoch {epoch+1}/{epochs}")
-        first_step = True
-        for batch in epoch_iter:
-            batch = jnp.array(batch)
-            batch = apply_curriculum_to_batch(batch, epoch)
-            if eff is None:
-                eff = random.uniform(random.fold_in(key, epoch), minval=0.2, maxval=1.0)
-            eff_val = jnp.asarray(eff, dtype=jnp.float32)
-            if first_step:
-                pbar.set_postfix_str("JIT Derleniyor...")
-            train_params, opt_state, val = train_step(train_params, opt_state, batch, eff_val)
-            if first_step:
-                pbar.set_postfix_str("Eğitim")
-                first_step = False
-            train_losses.append(float(val))
-            pbar.update(1)
-        pbar.close()
-        val_loss = None
-        if val_iterator is not None:
-            vs = []
-            for vbatch in val_iterator:
-                vbatch = jnp.array(vbatch)
-                fullp = _merge_params(train_params, static_params)
-                v = total_loss(fullp, vbatch, epoch, lambda_root=1.0, lambda_suffix=0.5, effort=eff if eff is not None else 0.6, mp_dtype=mp_dtype, use_remat=use_remat)
-                vs.append(float(v))
-            val_loss = float(jnp.mean(jnp.array(vs))) if vs else None
-        metrics.append({"epoch": epoch, "train_loss": float(jnp.mean(jnp.array(train_losses))) if train_losses else None, "val_loss": val_loss})
-        if log_callback is not None:
-            try:
-                log_callback(metrics[-1])
-            except Exception:
-                pass
-    params = _merge_params(train_params, static_params)
-    return (params, metrics) if return_metrics else params
+    # Add orthogonality loss if available (from HyperCognitive)
+    total = main_loss + 0.1 * ortho_loss  # lambda_ortho = 0.1
+    
+    # Add Kolmogorov Complexity loss for model simplicity
+    kloss = kolmogorov_complexity_loss(params, lambda_k=0.001)
+    total = total + kloss
+    
+    return total

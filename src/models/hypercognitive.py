@@ -149,20 +149,36 @@ def hypercognitive_apply(params: Dict[str, Any], x: jnp.ndarray, effort: float, 
     # Residual connection from pre-sync
     final_thoughts = final_thoughts + synced_thoughts * 0.5  # Partial integration
 
-    # 4. ORTHOGONALITY LOSS (CRITICAL FOR CREATIVITY)
+    # 4. RIEMANNIAN GEOMETRY: Ricci Curvature in Thought Space
+    # Zekanın geometrisini ölç: Düşünce uzayının eğriliğini hesapla
+    def compute_sectional_curvature(thoughts):
+        """Basitleştirilmiş sectional curvature hesabı"""
+        # Metric tensor approximation using thought vectors
+        g = jnp.cov(thoughts.reshape(-1, D).T) + jnp.eye(D) * 1e-6  # (D, D)
+        # Sectional curvature approximation: trace-based
+        trace_g = jnp.trace(g)
+        det_g = jnp.linalg.det(g + jnp.eye(D) * 1e-6)  # Prevent singular
+        curvature = (det_g ** (1/D) - trace_g / D) / D
+        return jnp.clip(curvature, -1.0, 1.0)  # Bound to [-1,1]
+
+    mean_thoughts = jnp.mean(final_thoughts, axis=1)  # (B, num_branches, D)
+    sectional_curvatures = []
+    for b in range(B):
+        curv = jax.vmap(compute_sectional_curvature)(mean_thoughts[b])  # (num_branches,)
+        sectional_curvatures.append(curv)
+    sectional_curvatures = jnp.stack(sectional_curvatures)  # (B, num_branches)
+
+    # Ricci Curvature Loss: Eğrilik belirlenen hedefe yakın olsun
+    target_curvature = -0.3  # Slightly hyperbolic for creativity (-1: extreme hyperbolic, +1: spherical)
+    ricci_loss = jnp.mean((sectional_curvatures - target_curvature) ** 2)
+
+    # 5. ORTHOGONALITY LOSS (CRITICAL FOR CREATIVITY)
     # Branch'lerin birbirinden farklı vektörler üretmesini zorlarız.
-    # Cosine similarity matrix'in off-diagonal elemanlarını minimize ederiz.
-    # Mean thought vector over L: (B, num_branches, D)
-    mean_thoughts = jnp.mean(final_thoughts, axis=1)
-    # Normalize vectors
     norms = jnp.linalg.norm(mean_thoughts, axis=-1, keepdims=True) + 1e-6
     normalized = mean_thoughts / norms
-    # Cosine Matrix: (B, num_branches, num_branches)
     cosine_mat = jnp.matmul(normalized, normalized.transpose(0, 2, 1))
-    # Identity matrix (diagonals are 1, we want 0 elsewhere)
     eye = jnp.eye(num_branches)[None, :, :]
-    # Loss = Mean squared error of off-diagonals
-    ortho_loss = jnp.mean((cosine_mat - eye) ** 2)
+    ortho_loss = jnp.mean((cosine_mat - eye) ** 2) + 0.5 * ricci_loss  # Combined geometric loss
 
     # 5. CREATIVE MERGER (Convergence)
     # Main input (x) acts as Query to select best ideas from Branches (Keys)
